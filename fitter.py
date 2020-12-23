@@ -8,7 +8,7 @@ import torch
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from .misc import text_styles
+from ._misc import text_styles
 
 class Fitter:
     # TODO - config is ugly because it requires inside knowledge
