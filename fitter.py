@@ -29,6 +29,8 @@ class Fitter:
             self.n_val_iters = len(self.data_loaders.train_loader)
         if load:
             self.load(load)
+        # for validation debug
+        self.id_key = ''
         
     def reset_optimizer(self):
         named_params = list(self.model.named_parameters())
@@ -118,7 +120,8 @@ class Fitter:
                 # validate every val_itrs
                 if (itr + 1) % self.n_val_iters == 0:
                     if self.data_loaders.val_loader is not None:
-                        avg_val_loss, avg_val_score = self.validate(verbose=verbose)
+                        avg_val_loss, avg_val_score = self.validate(
+                                                        verbose=(verbose == 2))
                     else:
                         avg_val_loss, avg_val_score = np.nan, np.nan
 
@@ -169,21 +172,21 @@ class Fitter:
         pass
 
 
-    def validate(self, inspect=False, verbose=0):
+    def validate(self, inspect=False, verbose=True):
         criterion = self.config.criterion
         self.model.eval()
         y_pred = []
         y_true = []
-        ids = []
-        total_correct = 0
-        total = 0
-        val_bar = tqdm(self.data_loaders.val_loader, disable=(verbose != 2))
+        if inspect and len(self.id_key):
+            ids = [] # for debugging purposes
+        val_bar = tqdm(self.data_loaders.val_loader, disable=(not verbose))
         for data in val_bar:
             with torch.no_grad():
                 outputs = self.model(*self.prepare_inputs(data))
             y_true.append(data['target'])
             y_pred.append(outputs.cpu())
-            ids += list(data['id'])
+            if inspect and len(self.id_key):
+                ids += list(data[self.id_key])
             
         y_true = torch.cat(y_true, axis=0)
         y_pred = torch.cat(y_pred, axis=0)
@@ -192,13 +195,16 @@ class Fitter:
 
         avg_val_score = self.compute_score(y_true, y_pred)
 
-        if verbose == 2:
+        if verbose:
             print(f'avg_val_loss: {avg_val_loss:.3f}, ' +
                   f'avg_val_score: {avg_val_score:.3f}',
                   flush=True)
         if inspect:
-            return {'loss': avg_val_loss, 'score': avg_val_score,
-                    'y_true': y_true, 'y_pred': y_pred, 'id': ids}
+            ret = {'loss': avg_val_loss, 'score': avg_val_score,
+                    'y_true': y_true, 'y_pred': y_pred}
+            if len(self.id_key):
+                ret[self.id_key] = ids
+            return ret
         return avg_val_loss, avg_val_score
 
     def compute_score(self, y_true, y_pred):
