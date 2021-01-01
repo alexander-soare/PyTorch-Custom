@@ -86,15 +86,18 @@ class Fitter:
                         overfit_data = data
                     else:
                         data = overfit_data
-                # get inputs and labels
-                targets = data['target'].to(self.device)
+
+                # get inputs and targets
+                inputs, targets = self.prepare_inputs_and_targets(data, mode='train')
 
                 # zero the parameter gradients
                 self.optimizer.zero_grad()
 
                 # forward + backward + optimize
-                outputs = self.model(*self.prepare_inputs(data))
-                loss = criterion(outputs, targets)
+                outputs = self.model(*inputs)
+
+                loss = self.compute_train_loss(targets, outputs)
+
                 loss.backward()
                 self.optimizer.step()
 
@@ -165,12 +168,23 @@ class Fitter:
         if save and self.config.run_name:
             self.save(f'{self.config.run_name}_epoch{epoch:02d}.pt')
 
-
     def on_start_epoch(self):
         """ tasks to do when starting in epoch, overwrite me
         """
         pass
 
+    def prepare_inputs_and_targets(self, data, mode='val'):
+        """
+        this method probably needs to be overriden
+        return a list of batches of inputs, and a single batch of targets
+        """
+        assert mode in ['train', 'val'], "`mode` must be either 'train' or 'val'"
+        return [data['inp'].to(self.device)], data['target'].to(self.device)
+
+    def compute_train_loss(self, y_true, y_pred):
+        """ could override this
+        """
+        return self.config.criterion(y_pred, y_true)
 
     def validate(self, inspect=False, verbose=True):
         criterion = self.config.criterion
@@ -181,9 +195,10 @@ class Fitter:
             ids = [] # for debugging purposes
         val_bar = tqdm(self.data_loaders.val_loader, disable=(not verbose))
         for data in val_bar:
+            inputs, targets = self.prepare_inputs_and_targets(data, mode='val')
             with torch.no_grad():
-                outputs = self.model(*self.prepare_inputs(data))
-            y_true.append(data['target'])
+                outputs = self.model(*inputs)
+            y_true.append(targets.cpu())
             y_pred.append(outputs.cpu())
             if inspect and len(self.id_key):
                 ids += list(data[self.id_key])
@@ -211,11 +226,6 @@ class Fitter:
         """ must be overidden
         """
         raise NotImplementedError()
-
-    def prepare_inputs(self, data):
-        """ this method probably needs to be overriden
-        """
-        return data['inp'].to(self.device)
 
     def plot_history(self, plot_from=0, sma_period=5):
         fig, ax = plt.subplots(1, 3, figsize=(20,5))
