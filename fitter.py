@@ -186,14 +186,18 @@ class Fitter:
         """
         return self.config.criterion(y_pred, y_true)
 
-    def validate(self, inspect=False, verbose=True):
+    def validate(self, inspect=False, use_train_loader=False, verbose=True):
         criterion = self.config.criterion
         self.model.eval()
         y_pred = []
         y_true = []
         if inspect and len(self.id_key):
             ids = [] # for debugging purposes
-        val_bar = tqdm(self.data_loaders.val_loader, disable=(not verbose))
+        if not use_train_loader:
+            loader = self.data_loaders.val_loader
+        else:
+            loader = self.data_loaders.train_loader
+        val_bar = tqdm(loader, disable=(not verbose))
         for data in val_bar:
             inputs, targets = self.prepare_inputs_and_targets(data, mode='val')
             with torch.no_grad():
