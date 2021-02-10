@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # https://github.com/mathiaszinnen/focal_loss_torch/blob/main/focal_loss/focal_loss.py
 class FocalLoss(nn.Module):
@@ -39,3 +40,51 @@ class FocalLoss(nn.Module):
             return x.sum()
         else:
             return x
+
+
+# https://github.com/pytorch/pytorch/issues/7455#issuecomment-513062631
+class CELabelSmoothingLoss(nn.Module):
+    """
+    Cross Entropy Loss with label smoothing, takes logits
+    """
+    def __init__(self, smoothing, n_classes, dim=-1):
+        """
+        `n_classes` is number of classes
+        `smoothing` is the smoothing factor. How much less confident than 100%
+         are we on true labels?
+        """
+        super(CELabelSmoothingLoss, self).__init__()
+        self.smoothing = smoothing
+        self.n_classes = n_classes
+        self.dim = dim
+
+    def forward(self, pred, target):
+        """ expects target to be categorical, and pred to be logits
+        """
+        pred = pred.log_softmax(dim=self.dim)
+        with torch.no_grad():
+            true_dist = torch.zeros_like(pred)
+            true_dist.fill_(self.smoothing / (self.n_classes - 1))
+            true_dist.scatter_(1, target.data.unsqueeze(1), 1.0 - self.smoothing)
+        return torch.mean(torch.sum(-true_dist * pred, dim=self.dim))
+
+
+
+class BCELabelSmoothingLoss(nn.Module):
+    """
+    Binary Cross Entropy Loss with label smoothing, takes logits
+    """
+    def __init__(self, smoothing):
+        """
+        `smoothing` is the smoothing factor. How much less confident than 100%
+         are we on true labels?
+        """
+        super(BCELabelSmoothingLoss, self).__init__()
+        self.smoothing = smoothing
+
+    def forward(self, pred, target):
+        """ expects target to be binary, and pred to be logits
+        """
+        with torch.no_grad():
+            target = torch.abs(target - self.smoothing)
+        return F.binary_cross_entropy_with_logits(pred, target)

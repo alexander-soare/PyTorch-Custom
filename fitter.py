@@ -33,15 +33,7 @@ class Fitter:
         self.id_key = ''
         
     def reset_optimizer(self):
-        named_params = list(self.model.named_parameters())
-        no_decay = ['.bias', '.bn', 'top.']
-        grouped_params = [
-            {'params': [p for n, p in named_params if not any(nd in n for nd in no_decay)],
-             'weight_decay': self.config.optimizer_params.get('weight_decay', 0.0)},
-            {'params': [p for n, p in named_params if any(nd in n for nd in no_decay)],
-             'weight_decay': 0.0}
-        ]
-        self.optimizer = self.config.optimizer(grouped_params,
+        self.optimizer = self.config.optimizer(self.model.parameters(),
                                                **self.config.optimizer_params)
         
     def reset_scheduler(self):
@@ -96,7 +88,7 @@ class Fitter:
                 # forward + backward + optimize
                 outputs = self.model(*inputs)
 
-                loss = self.compute_train_loss(targets, outputs)
+                loss = self.compute_loss(targets, outputs)
 
                 loss.backward()
                 self.optimizer.step()
@@ -181,11 +173,6 @@ class Fitter:
         assert mode in ['train', 'val'], "`mode` must be either 'train' or 'val'"
         return [data['inp'].to(self.device)], data['target'].to(self.device)
 
-    def compute_train_loss(self, y_true, y_pred):
-        """ could override this
-        """
-        return self.config.criterion(y_pred, y_true)
-
     def validate(self, inspect=False, use_train_loader=False, verbose=True):
         criterion = self.config.criterion
         self.model.eval()
@@ -210,7 +197,7 @@ class Fitter:
         y_true = torch.cat(y_true, axis=0)
         y_pred = torch.cat(y_pred, axis=0)
 
-        avg_val_loss = criterion(y_pred, y_true)
+        avg_val_loss = self.compute_loss(y_true, y_pred)
 
         avg_val_score = self.compute_score(y_true, y_pred)
 
@@ -225,6 +212,11 @@ class Fitter:
                 ret[self.id_key] = ids
             return ret
         return avg_val_loss, avg_val_score
+
+    def compute_loss(self, y_true, y_pred):
+        """ could override this
+        """
+        return self.config.criterion(y_pred, y_true)
 
     def compute_score(self, y_true, y_pred):
         """ must be overidden
