@@ -71,7 +71,7 @@ class Fitter:
             train_preds = 0
             train_bar = tqdm(self.data_loaders.train_loader, disable=(verbose != 2))
             train_bar.set_description(f'Epoch {epoch:03d}')
-            itr = 0
+            self.train_step = 0
             for data in train_bar:
                 if overfit:
                     if overfit_data is None:
@@ -96,7 +96,7 @@ class Fitter:
                 # scheduler
                 lr = self.optimizer.param_groups[0]['lr']
                 if self.scheduler is not None:
-                    self.scheduler.step()
+                    self.step_scheduler()
 
                 # logging
                 train_loss = loss.item()
@@ -113,7 +113,7 @@ class Fitter:
                     return
 
                 # validate every val_itrs
-                if (itr + 1) % self.n_val_iters == 0:
+                if (self.train_step + 1) % self.n_val_iters == 0:
                     if self.data_loaders.val_loader is not None:
                         avg_val_loss, avg_val_score = self.validate(
                                                         verbose=(verbose == 2))
@@ -141,7 +141,7 @@ class Fitter:
                         # print("Saving new best score")
                         self.save(f'{self.config.run_name}_best_score.pt')
 
-                itr += 1
+                self.train_step += 1
 
             if verbose == 1:
                 epoch_bar.set_postfix(train_loss=f"{(total_train_loss/train_preds):0.3f}",
@@ -172,6 +172,9 @@ class Fitter:
         """
         assert mode in ['train', 'val'], "`mode` must be either 'train' or 'val'"
         return [data['inp'].to(self.device)], data['target'].to(self.device)
+
+    def step_scheduler(self):
+        self.scheduler.step()
 
     def validate(self, inspect=False, use_train_loader=False, verbose=True):
         criterion = self.config.criterion
