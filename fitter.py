@@ -10,14 +10,43 @@ import pandas as pd
 
 from ._misc import text_styles
 
+class DefaultConfig:
+    def __init__(self):
+        self.weights_dir = ''
+        self.run_name = f'test'
+        # training
+        self.train_batch_size = 32
+        self.val_batch_size = 32
+        self.start_epoch = 0
+        self.end_epoch = 1
+        self.optimizer = torch.optim.AdamW
+        self.optimizer_params = {'lr': 3e-4, 'weight_decay': 1e-3}
+        self.scheduler_interval = 'step'
+        self.scheduler_interval_arg = False
+        self.criterion = torch.nn.BCEWithLogitsLoss()
+
+
+def merge_config(custom_config):
+    config = DefaultConfig()
+    for prop, value in vars(custom_config).items():
+        if prop.startswith('_'):
+            continue
+        setattr(config, prop, value)
+    return config
+
+
 class Fitter:
     # TODO - config is ugly because it requires inside knowledge
-    def __init__(self, model, data_loaders, device, config, n_val_iters=0, load=''):
+    def __init__(self, model, data_loaders, device, config=None, n_val_iters=0,
+                    load=''):
         self.model = model
         self.model.to(device)
         self.data_loaders = data_loaders
         self.device = device
-        self.config = config
+        if config is not None:
+            self.config = merge_config(config)
+        else:
+            config = DefaultConfig()
         self.reset_history()
         self.reset_optimizer()
         self.reset_scheduler()
@@ -94,9 +123,12 @@ class Fitter:
                 self.optimizer.step()
 
                 # scheduler
+                # first keep track of lr to report on it
                 lr = self.optimizer.param_groups[0]['lr']
                 if self.scheduler is not None:
-                    self.step_scheduler()
+                    if self.config.scheduler_interval == 'step':
+                        args = [self.train_step] if self.config.scheduler_interval_arg else []
+                        self.scheduler.step(*args)
 
                 # logging
                 train_loss = loss.item()
@@ -143,6 +175,11 @@ class Fitter:
 
                 self.train_step += 1
 
+            # step scheduler on epoch
+            if self.scheduler is not None and self.config.scheduler_interval == 'epoch':
+                args = [self.epoch] if self.config.scheduler_interval_arg else []
+                self.scheduler.step(*args)
+
             if verbose == 1:
                 epoch_bar.set_postfix(train_loss=f"{(total_train_loss/train_preds):0.3f}",
                                 val_loss=f"{avg_val_loss:.3f}", lr=f"{lr:.2E}",
@@ -172,9 +209,6 @@ class Fitter:
         """
         assert mode in ['train', 'val'], "`mode` must be either 'train' or 'val'"
         return [data['inp'].to(self.device)], data['target'].to(self.device)
-
-    def step_scheduler(self):
-        self.scheduler.step()
 
     def validate(self, inspect=False, use_train_loader=False, verbose=True):
         criterion = self.config.criterion
