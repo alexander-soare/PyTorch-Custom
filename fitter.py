@@ -36,7 +36,13 @@ def merge_config(custom_config):
 
 
 class Fitter:
-    # TODO - config is ugly because it requires inside knowledge
+    """
+    Must implement:
+     - compute_score
+    Recommended to override:
+     - prepare_inputs_and_targets
+    TODO - config is ugly because it requires inside knowledge
+    """
     def __init__(self, model, data_loaders, device, config=None, n_val_iters=0,
                     load=''):
         self.model = model
