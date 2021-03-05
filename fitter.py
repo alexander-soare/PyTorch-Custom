@@ -221,8 +221,8 @@ class Fitter:
     def validate(self, inspect=False, use_train_loader=False, verbose=True):
         criterion = self.config.criterion
         self.model.eval()
-        y_pred = []
-        y_true = []
+        outputs = []
+        targets = []
         if inspect and len(self.id_key):
             ids = [] # for debugging purposes
         if not use_train_loader:
@@ -231,20 +231,20 @@ class Fitter:
             loader = self.data_loaders.train_loader
         val_bar = tqdm(loader, disable=(not verbose))
         for data in val_bar:
-            inputs, targets = self.prepare_inputs_and_targets(data, mode='val')
+            inp, target = self.prepare_inputs_and_targets(data, mode='val')
             with torch.no_grad():
-                outputs = self.model(*inputs)
-            y_true.append(targets.cpu())
-            y_pred.append(outputs.cpu())
+                output = self.model(*inp)
+            targets.append(target.cpu())
+            outputs.append(output.cpu())
             if inspect and len(self.id_key):
                 ids += list(data[self.id_key])
             
-        y_true = torch.cat(y_true, axis=0)
-        y_pred = torch.cat(y_pred, axis=0)
+        targets = torch.cat(targets, axis=0)
+        outputs = torch.cat(outputs, axis=0)
 
-        avg_val_loss = self.compute_loss(y_true, y_pred)
+        avg_val_loss = self.compute_loss(targets, outputs)
 
-        avg_val_score = self.compute_score(y_true, y_pred)
+        avg_val_score = self.compute_score(targets, outputs)
 
         if verbose:
             print(f'avg_val_loss: {avg_val_loss:.3f}, ' +
@@ -252,18 +252,18 @@ class Fitter:
                   flush=True)
         if inspect:
             ret = {'loss': avg_val_loss, 'score': avg_val_score,
-                    'y_true': y_true, 'y_pred': y_pred}
+                    'targets': targets, 'outputs': outputs}
             if len(self.id_key):
                 ret[self.id_key] = ids
             return ret
         return avg_val_loss, avg_val_score
 
-    def compute_loss(self, y_true, y_pred):
+    def compute_loss(self, targets, outputs):
         """ could override this
         """
-        return self.config.criterion(y_pred, y_true)
+        return self.config.criterion(outputs, targets)
 
-    def compute_score(self, y_true, y_pred):
+    def compute_score(self, targets, outputs):
         """ must be overidden
         """
         raise NotImplementedError()
