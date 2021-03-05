@@ -178,6 +178,8 @@ class Fitter:
                         best_running_val_score = running_val_score
                         # print("Saving new best score")
                         self.save(f'{self.config.run_name}_best_score.pt')
+                        
+                    self.model.train()
 
                 self.train_step += 1
 
