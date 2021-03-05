@@ -1,5 +1,8 @@
+import torch
 from torch import nn
 import torch.nn.functional as F
+
+from .modules import Identity
 
 # https://amaarora.github.io/2020/08/30/gempool.html
 class GeM(nn.Module):
@@ -21,42 +24,56 @@ class GeM(nn.Module):
             + str(self.eps) + ')'
 
 
-class Identity(nn.Module):
-    """
-    Just a way of easily "deleting" layers in pretrained models
-    """
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, inp):
-        return inp
-
-
 class ResnetBase(nn.Module):
+    """
+    Helpful bridge to torchvision's resnet.
+    WARNING: We are susceptible to changes in the torchvision code. For now,
+     this is the most relevant snippet
+     https://github.com/pytorch/vision/blob/f637c63b0ce05328ffc6c98d0e1cb8e3ab1adaa4/torchvision/models/resnet.py#L230-L246
+    """
+
     def __init__(self, backbone_func, n_classes, backbone_args=[],
-                    backbone_kwargs={}, dropout=0, feature_pooler=None):
+                    backbone_kwargs={}, dropout=0,
+                    feature_pooler=nn.AdaptiveAvgPool2d((1, 1)),
+                    as_feature_extractor=False):
         """
         Expects Resnet backbone function (soon to be expanded)
         Allows replacing the following:
          - final feature map pooling operation (defaults to average pool)
          - dropout after pooling (defaults to 0)
          - `num_classes` number of output classes (must be provided)
+         - `as_feature_extractor` lets us get the output of the backbone without
+            fowarding through the fully connected layer. Hint: if you want the
+            feature maps without any spatial aggregation, set feature_pooler as
+            the identity mapping
         """
         super().__init__()
         self.backbone = backbone_func(*backbone_args, **backbone_kwargs)
-        if feature_pooler is not None:
-            self.backbone.avgpool = feature_pooler
+        self.backbone.layer4.register_forward_hook(self._hook_feature_map)
+        self.feature_pooler = feature_pooler
+        self.as_feature_extractor = as_feature_extractor
         self.dropout = nn.Dropout(p=dropout)
 
+        # good to keep track of this number
+        self.n_features = self.backbone.fc.in_features
         # make a new fc layer
-        self.fc = nn.Linear(self.backbone.fc.in_features, n_classes)
+        self.fc = nn.Linear(self.n_features, n_classes)
         # drop the backbone's fc layer
         self.backbone.fc = Identity()
         self.eval()        
 
+    def _hook_feature_map(self, *args):
+        """ grabs the output of layer4
+        """
+        self.feature_map = args[-1]
+
     def forward(self, inp):
         # forward through backbone
-        x = self.backbone(inp)
+        self.backbone(inp)
+        x = self.feature_map
+        x = self.feature_pooler(x)
+        if self.as_feature_extractor:
+            return x
         # dropout
         x = self.dropout(x)
         # get logits
