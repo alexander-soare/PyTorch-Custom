@@ -202,6 +202,9 @@ class Fitter:
 
             self.epoch = epoch + 1
 
+            if save and self.config.run_name:
+                self.save(f'{self.config.run_name}_epoch{epoch:02d}_last.pt')
+
         if save and self.config.run_name:
             self.save(f'{self.config.run_name}_epoch{epoch:02d}.pt')
 
