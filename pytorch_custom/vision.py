@@ -82,6 +82,28 @@ class ResnetBase(nn.Module):
         x = self.fc(x)
         return x
 
+    def freeze_up_to(self, layer):
+        """
+        freezes the backbone up to and including specified layer
+        this includes the batch norm directly after conv1
+        """
+        layers = ['conv1', 'layer1', 'layer2', 'layer3', 'layer4']
+        assert layer in layers, f"selected layer must be in {layers}"
+        for param in self.backbone.bn1.parameters():
+            param.requires_grad = False
+        for layer in layers[:layers.index(layer)+1]:
+            for param in eval(f"self.backbone.{layer}.parameters()"):
+                param.requires_grad = False
+
+    def unfreeze_all(self):
+        """
+        unfreeze all layers that were frozen by freeze_up_to
+        """
+        layers = ['conv1', 'bn1', 'layer1', 'layer2', 'layer3', 'layer4']
+        for layer in layers:
+            for param in eval(f"self.backbone.{layer}.parameters()"):
+                param.requires_grad = True
+
     def load(self, path, device):
         checkpoint = torch.load(path, map_location=device)
         self.load_state_dict(checkpoint['model_state_dict'])
