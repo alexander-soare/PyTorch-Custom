@@ -74,6 +74,8 @@ class ResnetBase(nn.Module):
         x = self.feature_pooler(x)
         if self.as_feature_extractor:
             return x
+        # flatten for fc
+        x = torch.flatten(x, 1)
         # dropout
         x = self.dropout(x)
         # get logits
