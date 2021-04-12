@@ -12,7 +12,7 @@ from ._misc import text_styles
 
 class DefaultConfig:
     def __init__(self):
-        self.weights_dir = ''
+        self.checkpoint_dir = ''
         self.run_name = f'test'
         # training
         self.train_batch_size = 32
@@ -337,10 +337,10 @@ class Fitter:
         }
         if self.scheduler is not None:
             save_dct['scheduler_state_dict'] = self.scheduler.state_dict()
-        torch.save(save_dct, os.path.join(self.config.weights_dir, filename))
+        torch.save(save_dct, os.path.join(self.config.checkpoint_dir, filename))
 
     def load(self, filename):
-        checkpoint = torch.load(os.path.join(self.config.weights_dir, filename),
+        checkpoint = torch.load(os.path.join(self.config.checkpoint_dir, filename),
                                     map_location= self.device)
         try:
             self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
