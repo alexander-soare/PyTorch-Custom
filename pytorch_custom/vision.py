@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -82,6 +84,20 @@ class ResnetBase(nn.Module):
         x = self.fc(x)
         return x
 
+    def freeze_layers(self, layers: List):
+        """
+        freezes just certiain layers of the backbone
+        """
+        available = ['conv1', 'layer1', 'layer2', 'layer3', 'layer4']
+        assert all(l in available for l in layers), \
+                                    f"selected layer must be in {available}"
+        if 'conv1' in layers:
+            for param in self.backbone.bn1.parameters():
+                param.requires_grad = False
+        for layer in layers:
+            for param in eval(f"self.backbone.{layer}.parameters()"):
+                param.requires_grad = False
+
     def freeze_up_to(self, layer):
         """
         freezes the backbone up to and including specified layer
@@ -89,11 +105,7 @@ class ResnetBase(nn.Module):
         """
         layers = ['conv1', 'layer1', 'layer2', 'layer3', 'layer4']
         assert layer in layers, f"selected layer must be in {layers}"
-        for param in self.backbone.bn1.parameters():
-            param.requires_grad = False
-        for layer in layers[:layers.index(layer)+1]:
-            for param in eval(f"self.backbone.{layer}.parameters()"):
-                param.requires_grad = False
+        self.freeze_layers(layers[:layers.index(layer)+1])
 
     def unfreeze_all(self):
         """
