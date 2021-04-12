@@ -3,7 +3,7 @@ import os
 
 import numpy as np
 
-from tqdm.auto import tqdm, trange
+from tqdm import tqdm, trange
 import torch
 import matplotlib.pyplot as plt
 import pandas as pd
