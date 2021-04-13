@@ -159,7 +159,7 @@ class Fitter:
                         avg_val_loss, avg_val_score = np.nan, np.nan
 
                     # save best
-                    self.history['val_loss'].append(avg_val_loss)
+                    self.history['val_loss'].append(avg_val_loss.item())
                     self.history['val_score'].append(avg_val_score)
 
                     # TODO decide if I want to use running avg
