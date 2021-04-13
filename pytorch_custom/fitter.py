@@ -221,17 +221,25 @@ class Fitter:
         assert mode in ['train', 'val'], "`mode` must be either 'train' or 'val'"
         return [data['inp'].to(self.device)], data['target'].to(self.device)
 
-    def validate(self, inspect=False, use_train_loader=False, verbose=True):
+    def validate(self, inspect=False, loader=None, use_train_loader=False, verbose=True):
+        """
+        inspects lets us retrieve more information than just the validation score and loss
+        if `loader` is not provide, `self.val_loader` is used by default
+        if `use_train_loader` is set, `self.train_loader` is used
+        """
         criterion = self.config.criterion
         self.model.eval()
         outputs = []
         targets = []
         if inspect and len(self.id_key):
             ids = [] # for debugging purposes
-        if not use_train_loader:
-            loader = self.data_loaders.val_loader
-        else:
-            loader = self.data_loaders.train_loader
+        if loader is None:
+            if not use_train_loader:
+                loader = self.data_loaders.val_loader
+            else:
+                loader = self.data_loaders.train_loader
+        elif use_train_loader:
+            print("Warning: You have provided a loader but also set `use_train_loader` to true")
         val_bar = tqdm(loader, disable=(not verbose))
         for data in val_bar:
             inp, target = self.prepare_inputs_and_targets(data, mode='val')
