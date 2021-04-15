@@ -56,6 +56,8 @@ class Fitter:
         self.reset_history()
         self.reset_optimizer()
         self.reset_scheduler()
+        self.best_running_val_loss = np.float('inf')
+        self.best_running_val_score = -np.float('inf')
         self.epoch = self.config.start_epoch
         self._n_train_iters = len(self.data_loaders.train_loader)
         if n_val_iters > 0:
@@ -87,13 +89,12 @@ class Fitter:
             self.reset_optimizer()
             self.reset_scheduler()
             self.reset_history()
+            self.best_running_val_loss = np.float('inf')
+            self.best_running_val_score = -np.float('inf')
 
         criterion = self.config.criterion
 
         overfit_data = None # in case we want to try overfitting to one batch
-
-        best_running_val_loss = np.float('inf')
-        best_running_val_score = -np.float('inf')
 
         epoch_bar = trange(self.epoch, self.config.end_epoch, disable=(verbose != 1))
 
@@ -167,15 +168,15 @@ class Fitter:
                     running_val_loss = np.mean(self.history['val_loss'][-1:])
                     running_val_score = np.mean(self.history['val_score'][-1:])
 
-                    if save and running_val_loss <= best_running_val_loss:
-                        best_running_val_loss = running_val_loss
+                    if save and running_val_loss <= self.best_running_val_loss:
+                        self.best_running_val_loss = running_val_loss
                         # print("Saving new best loss")
                         self.save(f'{self.config.run_name}_best_loss.pt')
 
                     # TODO - make it so that I can decide whether I'm going for
                     #  max or min
-                    if save and running_val_score >= best_running_val_score:
-                        best_running_val_score = running_val_score
+                    if save and running_val_score >= self.best_running_val_score:
+                        self.best_running_val_score = running_val_score
                         # print("Saving new best score")
                         self.save(f'{self.config.run_name}_best_score.pt')
                         
@@ -340,6 +341,8 @@ class Fitter:
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'epoch': self.epoch,
+            'best_running_val_score': self.best_running_val_score,
+            'best_running_val_loss': self.best_running_val_loss,
             'history': self.history,
             'config': self.config,
         }
@@ -375,6 +378,8 @@ class Fitter:
             print("Warning: Could not load epoch number")
         try:
             self.history = checkpoint['history']
+            self.best_running_val_loss = min(self.history['val_loss'])
+            self.best_running_val_score = max(self.history['val_score'])
         except:
             print("Warning: Could not load history")
 
