@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.modules.loss import _Loss
 
 # https://github.com/mathiaszinnen/focal_loss_torch/blob/main/focal_loss/focal_loss.py
 class FocalLoss(nn.Module):
@@ -88,3 +89,28 @@ class BCELabelSmoothingLoss(nn.Module):
         with torch.no_grad():
             target = torch.abs(target - self.smoothing)
         return F.binary_cross_entropy_with_logits(pred, target)
+
+
+# https://discuss.pytorch.org/t/label-smoothing-with-ctcloss/103392
+class SmoothCTCLoss(_Loss):
+    """
+    TODO I still need to do some work to properly understand this
+    """
+    def __init__(self, num_classes, blank=0, weight=0.01):
+        super().__init__(reduction='mean')
+        self.weight = weight
+        self.num_classes = num_classes
+
+        self.ctc = nn.CTCLoss(reduction='mean', blank=blank, zero_infinity=True)
+        self.kldiv = nn.KLDivLoss(reduction='batchmean')
+
+    def forward(self, log_probs, targets, input_lengths, target_lengths):
+        ctc_loss = self.ctc(log_probs, targets, input_lengths, target_lengths)
+
+        kl_inp = log_probs.transpose(0, 1)
+        kl_tar = torch.full_like(kl_inp, 1. / self.num_classes)
+        kldiv_loss = self.kldiv(kl_inp, kl_tar)
+
+        #print(ctc_loss, kldiv_loss)
+        loss = (1. - self.weight) * ctc_loss + self.weight * kldiv_loss
+        return loss
