@@ -47,7 +47,16 @@ class Fitter:
     TODO - config is ugly because it requires inside knowledge
     """
     def __init__(self, model, data_loaders, device, config=None, n_val_iters=0,
-                    load=''):
+                    id_key='', load=''):
+        """
+        `n_val_iters` lets us specify how often to do validation in intervals
+         of train iterations
+        `id_key` is used during validation with inspect=True. The idea is that
+         one of the keys in the dataset __getitem__ return value corresponds to
+         a datapoint id. This key is then returned alongside a list of vaidation
+         results. It lets us inspect a particular data point. See `validate`
+         method for more info
+        """
         self.model = model
         self.model.to(device)
         self.data_loaders = data_loaders
@@ -72,7 +81,7 @@ class Fitter:
         if load:
             self.load(load)
         # for validation debug
-        self.id_key = ''
+        self.id_key = id_key
         
     def reset_optimizer(self):
         self.optimizer = self.config.optimizer(self.model.parameters(),
