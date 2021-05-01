@@ -23,7 +23,11 @@ class DefaultConfig:
         self.optimizer = torch.optim.AdamW
         self.optimizer_params = {'lr': 3e-4, 'weight_decay': 1e-3}
         self.scheduler = None
+        # means we step the scheduler at each training iteration
+        #  the other option is 'epoch'
         self.scheduler_interval = 'step'
+        # whether or not the scheduler requires the step or epoch as an input
+        #  argument
         self.scheduler_interval_arg = False
         self.criterion = torch.nn.BCEWithLogitsLoss()
         self.clip_grad_norm = -1
