@@ -63,9 +63,11 @@ class Fitter:
         self.best_running_val_score = -np.float('inf')
         self.epoch = self.config.start_epoch
         self._n_train_iters = len(self.data_loaders.train_loader)
-        if n_val_iters > 0:
+        if n_val_iters > 0 and n_val_iters <= len(self.data_loaders.train_loader):
             self.n_val_iters = n_val_iters
         else:
+            if n_val_iters > len(self.data_loaders.train_loader):
+                print("Warning: Clipping n_val_iters to max train iters")
             self.n_val_iters = len(self.data_loaders.train_loader)
         if load:
             self.load(load)
