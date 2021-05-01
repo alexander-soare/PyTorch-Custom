@@ -4,3 +4,10 @@ class text_styles:
     FAIL = '\033[91m'
     BOLD = '\033[1m'
     ENDC = '\033[0m'
+
+
+class TrivialContext:
+    def __enter__(self):
+        pass
+    def __exit__(*args):
+        pass

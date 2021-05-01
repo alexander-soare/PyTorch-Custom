@@ -5,11 +5,13 @@ import numpy as np
 
 from tqdm import tqdm, trange
 import torch
+import torch.cuda.amp as amp
 from torch import nn
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from ._misc import text_styles
+from ._misc import text_styles, TrivialContext
 
 class DefaultConfig:
     def __init__(self):
@@ -31,6 +33,8 @@ class DefaultConfig:
         self.scheduler_interval_arg = False
         self.criterion = torch.nn.BCEWithLogitsLoss()
         self.clip_grad_norm = -1
+        # automatic mixed precision https://pytorch.org/docs/stable/notes/amp_examples.html
+        self.use_amp = False
 
 
 def merge_config(custom_config):
@@ -86,6 +90,12 @@ class Fitter:
             self.load(load)
         # for validation debug
         self.id_key = id_key
+        # automatic mixed precision
+        if self.config.use_amp:
+            self.scaler = amp.GradScaler()
+            self.train_forward_context = amp.autocast
+        else:
+            self.train_forward_context = TrivialContext
         
     def reset_optimizer(self):
         self.optimizer = self.config.optimizer(self.model.parameters(),
@@ -105,15 +115,18 @@ class Fitter:
         """
         what needs to happen during one train loop iteration
         """
-        # zero the parameter gradients
         self.optimizer.zero_grad()
 
-        # forward + backward + optimize
-        outputs = self.model(*inputs)
+        with self.train_forward_context():
+            outputs = self.model(*inputs)
+            loss = self.compute_loss(targets, outputs)
 
-        loss = self.compute_loss(targets, outputs)
-
-        loss.backward()
+        if self.config.use_amp:
+            self.scaler.scale(loss).backward()
+            # this next line makes sure getting/clipping grad norm works
+            self.scaler.unscale_(self.optimizer)
+        else:
+            loss.backward()
         
         if self.config.clip_grad_norm > 0: 
             grad_norm = nn.utils.clip_grad_norm_(
@@ -124,8 +137,13 @@ class Fitter:
             grad_norm = torch.norm(torch.stack([torch.norm(
                 p.grad.detach(), 2) for p in self.model.parameters()]), 2)
 
-        self.optimizer.step()
-
+        if self.config.use_amp:
+            # scaler.step knows that I previously used scaler.unscale_
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+            
         return loss, grad_norm
 
     def fit(self, cont=True, overfit=False, save=True, bail=False, verbose=0):
