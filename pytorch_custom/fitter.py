@@ -22,6 +22,7 @@ class DefaultConfig:
         self.end_epoch = 1
         self.optimizer = torch.optim.AdamW
         self.optimizer_params = {'lr': 3e-4, 'weight_decay': 1e-3}
+        self.scheduler = None
         self.scheduler_interval = 'step'
         self.scheduler_interval_arg = False
         self.criterion = torch.nn.BCEWithLogitsLoss()
