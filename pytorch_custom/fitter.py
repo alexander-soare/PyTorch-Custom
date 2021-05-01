@@ -162,9 +162,10 @@ class Fitter:
                         self.scheduler.step(*args)
 
                 # logging
+                batch_size = inputs[0].shape[0]
                 train_loss = loss.item()
-                total_train_loss += train_loss * targets.shape[0] # unaverage
-                train_preds += targets.shape[0]
+                total_train_loss += train_loss * batch_size # unaverage
+                train_preds += batch_size
                 train_bar.set_postfix(train_loss=f'{train_loss:.5f}',
                                 lr=f'{lr:.2E}', grad_norm=f'{grad_norm:.3f}')
                 self.history['train_loss'].append(train_loss)
