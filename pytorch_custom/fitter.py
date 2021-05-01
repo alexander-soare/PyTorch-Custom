@@ -5,6 +5,7 @@ import numpy as np
 
 from tqdm import tqdm, trange
 import torch
+from torch import nn
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -24,6 +25,7 @@ class DefaultConfig:
         self.scheduler_interval = 'step'
         self.scheduler_interval_arg = False
         self.criterion = torch.nn.BCEWithLogitsLoss()
+        self.clip_grad_norm = -1
 
 
 def merge_config(custom_config):
@@ -127,6 +129,14 @@ class Fitter:
                 loss = self.compute_loss(targets, outputs)
 
                 loss.backward()
+                if self.config.clip_grad_norm > 0: 
+                    grad_norm = nn.utils.clip_grad_norm_(
+                                                self.model.parameters(),
+                                                self.config.clip_grad_norm)
+                else:
+                    # NOTE assumes l2 norm
+                    grad_norm = torch.norm(torch.stack([torch.norm(
+                        p.grad.detach(), 2) for p in self.model.parameters()]), 2)
                 self.optimizer.step()
 
                 # scheduler
@@ -142,9 +152,10 @@ class Fitter:
                 total_train_loss += train_loss * targets.shape[0] # unaverage
                 train_preds += targets.shape[0]
                 train_bar.set_postfix(train_loss=f'{train_loss:.5f}',
-                                lr=f'{lr:.2E}')
+                                lr=f'{lr:.2E}', grad_norm=f'{grad_norm:.3f}')
                 self.history['train_loss'].append(train_loss)
                 self.history['lr'].append(lr)
+                self.history['grad_norm'] = grad_norm
 
                 # bail out
                 if bail and train_loss > 100000:
