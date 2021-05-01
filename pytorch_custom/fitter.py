@@ -269,8 +269,8 @@ class Fitter:
         """
         criterion = self.config.criterion
         self.model.eval()
-        outputs = []
-        targets = []
+        ls_outputs = []
+        ls_targets = []
         if inspect and len(self.id_key):
             ids = [] # for debugging purposes
         if loader is None:
@@ -282,18 +282,17 @@ class Fitter:
             print("Warning: You have provided a loader but also set `use_train_loader` to true")
         val_bar = tqdm(loader, disable=(not verbose))
         for data in val_bar:
-            inp, target = self.prepare_inputs_and_targets(data, mode='val')
+            inputs, targets = self.prepare_inputs_and_targets(data, mode='val')
             with torch.no_grad():
-                output = self.model(*inp)
-            targets.append(target.cpu())
-            outputs.append(output.cpu())
+                outputs = self.model(*inputs)
+            ls_targets.append(targets)
+            ls_outputs.append(outputs)
             if inspect and len(self.id_key):
                 ids += list(data[self.id_key])
-            
-        targets = torch.cat(targets, axis=0)
-        outputs = torch.cat(outputs, axis=0)
+        targets, outputs = self.collate_targets_and_outputs(ls_targets, ls_outputs)
 
-        avg_val_loss = self.compute_loss(targets, outputs)
+        with torch.no_grad():
+            avg_val_loss = self.compute_loss(targets, outputs)
 
         avg_val_score = self.compute_score(targets, outputs)
 
@@ -307,7 +306,32 @@ class Fitter:
             if len(self.id_key):
                 ret[self.id_key] = ids
             return ret
+
+        self.on_validate_end(targets, outputs)
+
         return avg_val_loss, avg_val_score
+
+    def on_validate_end(self, targets, outputs):
+        """
+        post-validation hook, might be useful for showing something like an 
+        example
+        """
+        pass
+
+
+    def collate_targets_and_outputs(self, ls_targets, ls_outputs):
+        """
+        during validation targets and outputs are concatenated into a list
+        depending on the nature of these, we might want to overwrite the way
+        that the are collated prior to computing loss and score
+        by default, we have the naive implementation where ls_targets and ls_outputs
+        are lists of tensors
+        note that we send targets and outputs to cpu
+        """
+        targets = torch.cat(ls_targets, axis=0).cpu()
+        outputs = torch.cat(ls_outputs, axis=0).cpu()
+        return targets, outputs
+
 
     def compute_loss(self, targets, outputs):
         """ could override this
