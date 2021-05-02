@@ -290,7 +290,7 @@ class Fitter:
         self.model.eval()
         ls_outputs = []
         ls_targets = []
-        if inspect and len(self.id_key):
+        if inspect and self.id_key != '':
             ids = [] # for debugging purposes
         if loader is None:
             if not use_train_loader:
@@ -306,7 +306,7 @@ class Fitter:
                 outputs = self.model(*inputs)
             ls_targets.append(targets)
             ls_outputs.append(outputs)
-            if inspect and len(self.id_key):
+            if inspect and self.id_key != '':
                 ids += list(data[self.id_key])
         targets, outputs = self.collate_targets_and_outputs(ls_targets, ls_outputs)
 
@@ -322,7 +322,7 @@ class Fitter:
         if inspect:
             ret = {'loss': avg_val_loss, 'score': avg_val_score,
                     'targets': targets, 'outputs': outputs}
-            if len(self.id_key):
+            if self.id_key != '':
                 ret[self.id_key] = ids
             return ret
 
