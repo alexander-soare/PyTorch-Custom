@@ -323,7 +323,7 @@ class Fitter:
             ret = {'loss': avg_val_loss, 'score': avg_val_score,
                     'targets': targets, 'outputs': outputs}
             if self.id_key != '':
-                ret[self.id_key] = ids
+                ret['id'] = ids
             return ret
 
         self.on_validate_end(targets, outputs)
