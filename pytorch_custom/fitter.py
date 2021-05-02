@@ -109,7 +109,8 @@ class Fitter:
             self.scheduler = None
 
     def reset_history(self):
-        self.history = {'train_loss': [], 'val_loss': [], 'val_score': [], 'lr': []}
+        self.history = {'train_loss': [], 'val_loss': [], 'val_score': [],
+                        'lr': [], 'grad_norm': []}
 
     def train_iteration(self, inputs, targets):
         """
@@ -201,7 +202,7 @@ class Fitter:
                                 lr=f'{lr:.2E}', grad_norm=f'{grad_norm:.3f}')
                 self.history['train_loss'].append(train_loss)
                 self.history['lr'].append(lr)
-                self.history['grad_norm'] = grad_norm
+                self.history['grad_norm'].append(grad_norm)
 
                 # bail out
                 if bail and train_loss > 100000:
