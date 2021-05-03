@@ -35,6 +35,8 @@ class DefaultConfig:
         self.clip_grad_norm = -1
         # automatic mixed precision https://pytorch.org/docs/stable/notes/amp_examples.html
         self.use_amp = False
+        # whether we are aiming to maximize or minimize score
+        self.score_objective = 'max'
 
 
 def merge_config(custom_config):
@@ -96,6 +98,10 @@ class Fitter:
             self.train_forward_context = amp.autocast
         else:
             self.train_forward_context = TrivialContext
+        # check score objective
+        assert self.config.score_objective in ['min', 'max'], \
+                        "config.score_objective must be either 'min' or 'max'"
+
         
     def reset_optimizer(self):
         self.optimizer = self.config.optimizer(self.model.parameters(),
@@ -154,7 +160,10 @@ class Fitter:
             self.reset_scheduler()
             self.reset_history()
             self.best_running_val_loss = np.float('inf')
-            self.best_running_val_score = -np.float('inf')
+            if self.config.score_objective == 'max':
+                self.best_running_val_score = -np.float('inf')
+            elif self.config.score_objective == 'min':
+                self.best_running_val_score = np.float('inf')
 
         criterion = self.config.criterion
 
@@ -228,14 +237,11 @@ class Fitter:
 
                     if save and running_val_loss <= self.best_running_val_loss:
                         self.best_running_val_loss = running_val_loss
-                        # print("Saving new best loss")
                         self.save(f'{self.config.run_name}_best_loss.pt')
 
-                    # TODO - make it so that I can decide whether I'm going for
-                    #  max or min
-                    if save and running_val_score >= self.best_running_val_score:
+                    sign = 1 if self.config.score_objective == 'min' else -1
+                    if save and sign*running_val_score <= sign*self.best_running_val_score:
                         self.best_running_val_score = running_val_score
-                        # print("Saving new best score")
                         self.save(f'{self.config.run_name}_best_score.pt')
                         
                     self.model.train()
@@ -370,13 +376,13 @@ class Fitter:
         train_loss = pd.Series(self.history['train_loss'][plot_from:])
         ax[0].plot(x_axis[plot_from:], train_loss, alpha=0.5)
         ax[0].plot(x_axis[plot_from:][sma_period-1:],
-                   train_loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values)
+            train_loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values)
         
         # val loss
         vals_per_epoch = self._n_train_iters//self.n_val_iters
         x_axis = np.arange(1, len(self.history['val_loss']) + 1)/vals_per_epoch
         ax[0].plot(x_axis[(vals_per_epoch * plot_from)//self._n_train_iters:],
-                   self.history['val_loss'][(vals_per_epoch * plot_from)//self._n_train_iters:])
+            self.history['val_loss'][(vals_per_epoch * plot_from)//self._n_train_iters:])
         ax[0].legend(['train loss', 'train loss smoothed', 'val loss'])
         ax[0].set_xlabel('epoch')
         ax[0].set_ylabel('loss')
@@ -394,7 +400,10 @@ class Fitter:
             ax[1].set_xlabel('epoch')
             ax[1].set_ylabel('score')
             ax[1].grid()
-            title = f"Best val score: {max(self.history['val_score']):0.3f}"
+            if self.config.score_objective == 'max':
+                title = f"Best val score: {max(self.history['val_score']):0.3f}"
+            elif self.config.score_objective == 'min':
+                title = f"Best val score: {min(self.history['val_score']):0.3f}"
             ax[1].set_title(title)
 
         # lr
