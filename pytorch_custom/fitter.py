@@ -1,5 +1,6 @@
 import gc
 import os
+from typing import Sequence
 
 import numpy as np
 
@@ -22,9 +23,9 @@ class DefaultConfig:
         self.val_batch_size = 32
         self.start_epoch = 0
         self.end_epoch = 1
-        self.optimizer = torch.optim.AdamW
+        self.optimizers = torch.optim.AdamW
         self.optimizer_params = {'lr': 3e-4, 'weight_decay': 1e-3}
-        self.scheduler = None
+        self.schedulers = []
         # means we step the scheduler at each training iteration
         #  the other option is 'epoch'
         self.scheduler_interval = 'step'
@@ -45,20 +46,33 @@ def merge_config(custom_config):
         if prop.startswith('_'):
             continue
         setattr(config, prop, value)
+    # for backwards compatibility
+    try:
+        config.schedulers = config.scheduler
+        config.optimizers = config.optimizer
+    except AttributeError:
+        pass
     return config
 
 
 class Fitter:
     """
-    Must implement:
+    Must override:
      - compute_score
-    Recommended to override:
+    May need to override:
      - prepare_inputs_and_targets
-    TODO - config is ugly because it requires inside knowledge
+     - compute_loss
+     - collate_targets_and_outputs (for validation)
+     - forward_train (if you have more than one model)
+     - forward_validate (if you have more than one model)
+     - on_start_epoch
+     - on_validate_end
     """
-    def __init__(self, model, data_loaders, device, config=None, n_val_iters=0,
+    def __init__(self, models, data_loaders, device, config=None, n_val_iters=0,
                     id_key='', load=''):
         """
+        a list of models may be provided, but then a list of optimizers
+         and a list of schedulers of the same lengths are also expected
         `n_val_iters` lets us specify how often to do validation in intervals
          of train iterations
         `id_key` is used during validation with inspect=True. The idea is that
@@ -67,8 +81,10 @@ class Fitter:
          results. It lets us inspect a particular data point. See `validate`
          method for more info
         """
-        self.model = model
-        self.model.to(device)
+        self.models = models
+        if not isinstance(self.models, Sequence):
+            self.models = [self.models]
+        [model.to(device) for model in self.models]
         self.data_loaders = data_loaders
         self.device = device
         if config is not None:
@@ -76,8 +92,8 @@ class Fitter:
         else:
             config = DefaultConfig()
         self.reset_history()
-        self.reset_optimizer()
-        self.reset_scheduler()
+        self.reset_optimizers()
+        self.reset_schedulers()
         self.best_running_val_loss = np.float('inf')
         self.best_running_val_score = -np.float('inf')
         self.epoch = self.config.start_epoch
@@ -103,61 +119,96 @@ class Fitter:
                         "config.score_objective must be either 'min' or 'max'"
 
         
-    def reset_optimizer(self):
-        self.optimizer = self.config.optimizer(self.model.parameters(),
-                                               **self.config.optimizer_params)
+    def reset_optimizers(self):
+        optimizers = self.config.optimizers
+        if not isinstance(optimizers, Sequence):
+            optimizers = [optimizers]
+        assert len(optimizers) == len(self.models), \
+                    "Must provide as many optimizers as models"
+        optimizer_params = self.config.optimizer_params
+        if not isinstance(optimizer_params, Sequence):
+            optimizer_params = [optimizer_params]
+        self.optimizers = []
+        for opt, ops, m in zip(optimizers, optimizer_params, self.models):
+            self.optimizers.append(opt(m.parameters(), **ops))
         
-    def reset_scheduler(self):
-        if self.config.scheduler is not None:
-            self.scheduler = self.config.scheduler(self.optimizer,
-                                                   **self.config.scheduler_params)
-        else:
-            self.scheduler = None
+    def reset_schedulers(self):
+        schedulers = self.config.schedulers
+        if not isinstance(schedulers, Sequence):
+            schedulers = [schedulers]
+        if len(schedulers) > 0:
+            assert len(schedulers) == len(self.models), \
+                    "Must provide as many schedulers as models"
+        scheduler_params = self.config.scheduler_params
+        if not isinstance(scheduler_params, Sequence):
+            scheduler_params = [scheduler_params]
+        assert len(scheduler_params) == len(schedulers), \
+                "Must provide as many sets of scheduler_params as schedulers"
+        self.schedulers = []
+        for sched, sps, opt in zip(schedulers, scheduler_params, self.optimizers):
+            self.schedulers.append(sched(opt, **sps))
 
     def reset_history(self):
-        self.history = {'train_loss': [], 'val_loss': [], 'val_score': [],
-                        'lr': [], 'grad_norm': []}
+        self.history = {'train_loss': [], 'val_loss': [], 'val_score': []}
+        optimizers = self.config.optimizers
+        if not isinstance(optimizers, Sequence):
+            optimizers = [optimizers]
+        for i in range(len(optimizers)):
+            self.history[f'lr_{i}'] = []
+            self.history[f'grad_norm_{i}'] = []
+
+    def forward_train(self, inputs, targets):
+        """
+        a single forward pass for training. usually this is straight forward
+        but one might want to be more specific where there are multiple models
+        """
+        return self.models[0](*inputs)
 
     def train_iteration(self, inputs, targets):
         """
         what needs to happen during one train loop iteration
         """
-        self.optimizer.zero_grad()
+        for optimizer in self.optimizers:
+            optimizer.zero_grad()
 
         with self.train_forward_context():
-            outputs = self.model(*inputs)
-            loss = self.compute_loss(targets, outputs)
+            outputs = self.forward_train(inputs, targets)
+            loss = self.compute_loss(targets, outputs, mode='train')
 
         if self.config.use_amp:
             self.scaler.scale(loss).backward()
             # this next line makes sure getting/clipping grad norm works
-            self.scaler.unscale_(self.optimizer)
+            for optimizer in self.optimizers:
+                self.scaler.unscale_(optimizer)
         else:
             loss.backward()
         
-        if self.config.clip_grad_norm > 0: 
-            grad_norm = nn.utils.clip_grad_norm_(
-                                        self.model.parameters(),
-                                        self.config.clip_grad_norm)
-        else:
-            # NOTE assumes l2 norm
-            grad_norm = torch.norm(torch.stack([torch.norm(
-                p.grad.detach(), 2) for p in self.model.parameters()]), 2)
+        grad_norms = []
+        for model in self.models:
+            if self.config.clip_grad_norm > 0:
+                grad_norms.append(nn.utils.clip_grad_norm_(model.parameters(),
+                                    self.config.clip_grad_norm))
+            else:
+                # NOTE assumes l2 norm
+                grad_norms.append(torch.norm(torch.stack([torch.norm(
+                        p.grad.detach(), 2) for p in model.parameters()]), 2))
 
         if self.config.use_amp:
             # scaler.step knows that I previously used scaler.unscale_
-            self.scaler.step(self.optimizer)
+            for optimizer in self.optimizers:
+                self.scaler.step(optimizer)
             self.scaler.update()
         else:
-            self.optimizer.step()
+            for optimizer in self.optimizers:
+                optimizer.step()
             
-        return loss, grad_norm
+        return loss, grad_norms
 
     def fit(self, cont=True, overfit=False, save=True, bail=False, verbose=0):
 
         if self.epoch == 0 or not cont:
-            self.reset_optimizer()
-            self.reset_scheduler()
+            self.reset_optimizers()
+            self.reset_schedulers()
             self.reset_history()
             self.best_running_val_loss = np.float('inf')
             if self.config.score_objective == 'max':
@@ -175,7 +226,7 @@ class Fitter:
             # hook for tasks to do when starting epoch
             self.on_start_epoch()
             # train
-            self.model.train()
+            [model.train() for model in self.models]
             total_train_loss = 0.0
             train_preds = 0
             train_bar = tqdm(self.data_loaders.train_loader, disable=(verbose != 2))
@@ -192,26 +243,31 @@ class Fitter:
                 inputs, targets = self.prepare_inputs_and_targets(data, mode='train')
 
                 # train step
-                loss, grad_norm = self.train_iteration(inputs, targets)
+                loss, grad_norms = self.train_iteration(inputs, targets)
 
                 # scheduler
                 # first keep track of lr to report on it
-                lr = self.optimizer.param_groups[0]['lr']
-                if self.scheduler is not None:
+                lrs = []
+                for optimizer in self.optimizers:
+                    lrs.append(optimizer.param_groups[0]['lr'])
+                for scheduler in self.schedulers:
                     if self.config.scheduler_interval == 'step':
                         args = [self.train_step] if self.config.scheduler_interval_arg else []
-                        self.scheduler.step(*args)
+                        scheduler.step(*args)
 
                 # logging
                 batch_size = inputs[0].shape[0]
                 train_loss = loss.item()
                 total_train_loss += train_loss * batch_size # unaverage
                 train_preds += batch_size
-                train_bar.set_postfix(train_loss=f'{train_loss:.5f}',
-                                lr=f'{lr:.2E}', grad_norm=f'{grad_norm:.3f}')
+                kwargs = {f'lr_{i}': f'{lr:.2E}' for i, lr in enumerate(lrs)}
+                kwargs.update({f'grad_norm_{i}': f'{grad_norm:.3f}' \
+                                for i, grad_norm in enumerate(grad_norms)})
+                train_bar.set_postfix(train_loss=f'{train_loss:.5f}', **kwargs)
                 self.history['train_loss'].append(train_loss)
-                self.history['lr'].append(lr)
-                self.history['grad_norm'].append(grad_norm)
+                for i, (lr, grad_norm) in enumerate(zip(lrs, grad_norms)):
+                    self.history[f'lr_{i}'].append(lr)
+                    self.history[f'grad_norm_{i}'].append(grad_norm.item())
 
                 # bail out
                 if bail and train_loss > 100000:
@@ -244,14 +300,15 @@ class Fitter:
                         self.best_running_val_score = running_val_score
                         self.save(f'{self.config.run_name}_best_score.pt')
                         
-                    self.model.train()
+                    [model.train() for model in self.models]
 
                 self.train_step += 1
 
             # step scheduler on epoch
-            if self.scheduler is not None and self.config.scheduler_interval == 'epoch':
-                args = [self.epoch] if self.config.scheduler_interval_arg else []
-                self.scheduler.step(*args)
+            if self.config.scheduler_interval == 'epoch':
+                for scheduler in self.schedulers:
+                    args = [self.epoch] if self.config.scheduler_interval_arg else []
+                    scheduler.step(*args)
 
             if verbose == 1:
                 epoch_bar.set_postfix(train_loss=f"{(total_train_loss/train_preds):0.3f}",
@@ -286,6 +343,13 @@ class Fitter:
         assert mode in ['train', 'val'], "`mode` must be either 'train' or 'val'"
         return [data['inp'].to(self.device)], data['target'].to(self.device)
 
+    def forward_validate(self, inputs):
+        """
+        a single forward pass for validation. usually this is straight forward
+        but one might want to be more specific where there are multiple models
+        """
+        return self.models[0](*inputs)
+
     def validate(self, inspect=False, loader=None, use_train_loader=False, verbose=True):
         """
         inspects lets us retrieve more information than just the validation score and loss
@@ -293,7 +357,7 @@ class Fitter:
         if `use_train_loader` is set, `self.train_loader` is used
         """
         criterion = self.config.criterion
-        self.model.eval()
+        [model.eval() for model in self.models]
         ls_outputs = []
         ls_targets = []
         if inspect and self.id_key != '':
@@ -309,7 +373,7 @@ class Fitter:
         for data in val_bar:
             inputs, targets = self.prepare_inputs_and_targets(data, mode='val')
             with torch.no_grad():
-                outputs = self.model(*inputs)
+                outputs = self.forward_validate(inputs)
             ls_targets.append(targets)
             ls_outputs.append(outputs)
             if inspect and self.id_key != '':
@@ -317,9 +381,9 @@ class Fitter:
         targets, outputs = self.collate_targets_and_outputs(ls_targets, ls_outputs)
 
         with torch.no_grad():
-            avg_val_loss = self.compute_loss(targets, outputs)
+            avg_val_loss = self.compute_loss(targets, outputs, mode='val')
 
-        avg_val_score = self.compute_score(targets, outputs)
+        avg_val_score = self.compute_score(targets, outputs, mode='val')
 
         if verbose:
             print(f'avg_val_loss: {avg_val_loss:.3f}, ' +
@@ -343,7 +407,6 @@ class Fitter:
         """
         pass
 
-
     def collate_targets_and_outputs(self, ls_targets, ls_outputs):
         """
         during validation targets and outputs are concatenated into a list
@@ -357,19 +420,19 @@ class Fitter:
         outputs = torch.cat(ls_outputs, axis=0).cpu()
         return targets, outputs
 
-
-    def compute_loss(self, targets, outputs):
+    def compute_loss(self, targets, outputs, mode='train'):
         """ could override this
         """
         return self.config.criterion(outputs, targets)
 
-    def compute_score(self, targets, outputs):
+    def compute_score(self, targets, outputs, mode='val'):
         """ must be overidden
         """
         raise NotImplementedError()
 
     def plot_history(self, plot_from=0, sma_period=5):
-        fig, ax = plt.subplots(1, 3, figsize=(20,5))
+        fig, ax = plt.subplots(2, 2, figsize=(20,10))
+        ax = ax.flatten()
 
         # train loss
         x_axis = np.arange(1, len(self.history['train_loss'])+1)/self._n_train_iters
@@ -406,21 +469,38 @@ class Fitter:
                 title = f"Best val score: {min(self.history['val_score']):0.3f}"
             ax[1].set_title(title)
 
-        # lr
+        # lrs
         x_axis = np.arange(1, len(self.history['train_loss'])+1)/self._n_train_iters
-        ax[2].plot(x_axis[plot_from:], self.history['lr'][plot_from:])
+        legend = []
+        for i in range(len(self.optimizers)):
+            ax[2].plot(x_axis[plot_from:], self.history[f'lr_{i}'][plot_from:])
+            legend.append(f'lr_{i}')
         ax[2].set_xlabel('epoch')
         ax[2].set_ylabel('lr')
+        if len(legend):
+            ax[2].legend(legend)
         ax[2].grid()
+
+        # grad norms
+        x_axis = np.arange(1, len(self.history['train_loss'])+1)/self._n_train_iters
+        legend = []
+        for i in range(len(self.optimizers)):
+            ax[3].plot(x_axis[plot_from:], self.history[f'grad_norm_{i}'][plot_from:])
+            legend.append(f'grad_norm_{i}')
+        ax[3].set_xlabel('epoch')
+        ax[3].set_ylabel('grad_norm')
+        if len(legend):
+            ax[3].legend(legend)
+        ax[3].grid()
 
     def plot_lr_sweep(self, sma_period=5):
         fig, ax = plt.subplots(figsize=(15,5))
         loss = pd.Series(self.history['train_loss'])
-        ax.plot(self.history['lr'], loss)
-        ax.plot(self.history['lr'][sma_period-1:],
+        ax.plot(self.history['lr_0'], loss)
+        ax.plot(self.history['lr_0'][sma_period-1:],
                 loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values)
         legend = ['exact', 'smoothed']
-        ax.set_xlabel('lr')
+        ax.set_xlabel('lr_0')
         ax.set_ylabel('loss')
         ax.set_yscale('log')
         ax.set_xscale('log')
@@ -429,40 +509,46 @@ class Fitter:
 
     def save(self, filename):
         save_dct = {
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
             'epoch': self.epoch,
             'best_running_val_score': self.best_running_val_score,
             'best_running_val_loss': self.best_running_val_loss,
             'history': self.history,
-            'config': self.config,
         }
-        if self.scheduler is not None:
-            save_dct['scheduler_state_dict'] = self.scheduler.state_dict()
+        for i, model in enumerate(self.models):
+            save_dct[f'model_{i}_state_dict'] = model.state_dict()
+        for i, optimizer in enumerate(self.optimizers):
+            save_dct[f'optimizer_{i}_state_dict'] = optimizer.state_dict()
+        for i, scheduler in enumerate(self.schedulers):
+            save_dct[f'scheduler_{i}_state_dict'] = scheduler.state_dict()            
         torch.save(save_dct, os.path.join(self.config.checkpoint_dir, filename))
 
     def load(self, filename):
         checkpoint = torch.load(os.path.join(self.config.checkpoint_dir, filename),
-                                    map_location= self.device)
-        try:
-            self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-        except RuntimeError:
-            msg = "RuntimeError when loading model state dict"
-            msg += ". Suspecting that top layers did not match"
-            msg += ". Dropping them and trying again."
-            print(msg)
-            keys = [k for k in checkpoint['model_state_dict'] if 'top.' in k]
-            for key in keys:
-                del checkpoint['model_state_dict'][key]
-            self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-        try:
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        except:
-            print("Warning: Could not load optimizer_state_dict")
-        try:
-            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        except:
-            print("Warning: Could not load scheduler_state_dict")
+                                    map_location=self.device)
+        for i, model in enumerate(self.models):
+            try:
+                model.load_state_dict(checkpoint[f'model_{i}_state_dict'],
+                                        strict=False)
+            except RuntimeError:
+                msg = f"RuntimeError when loading model_{i}_state_dict"
+                msg += ". Suspecting that top layers did not match"
+                msg += ". Dropping them and trying again."
+                print(msg)
+                keys = [k for k in checkpoint[f'model_{i}_state_dict'] if 'top.' in k]
+                for key in keys:
+                    del checkpoint[f'model_{i}_state_dict'][key]
+                model.load_state_dict(checkpoint[f'model_{i}_state_dict'],
+                                        strict=False)
+        for i, optimizer in enumerate(self.optimizers):
+            try:
+                optimizer.load_state_dict(checkpoint[f'optimizer_{i}_state_dict'])
+            except:
+                print(f"Warning: Could not load optimizer_{i}_state_dict")
+        for i, scheduler in enumerate(self.schedulers):
+            try:
+                scheduler.load_state_dict(checkpoint[f'scheduler_{i}_state_dict'])
+            except:
+                print(f"Warning: Could not load scheduler_{i}_state_dict")
         try:
             self.epoch = checkpoint['epoch']
         except:
@@ -474,25 +560,27 @@ class Fitter:
         except:
             print("Warning: Could not load history")
 
-    def clear_optimizer(self):
+    def clear_optimizers(self):
         try:
-            self._optimizer_to(torch.device('cpu'))
-            del self.optimizer
+            self._optimizers_to(torch.device('cpu'))
+            for optimizer in self.optimizers:
+                del optimizer
             gc.collect()
             torch.cuda.empty_cache()
         except TypeError:
             pass
                     
-    def _optimizer_to(self, device):
-        for param in self.optimizer.state.values():
-            # Not sure there are any global tensors in the state dict
-            if isinstance(param, torch.Tensor):
-                param.data = param.data.to(device)
-                if param._grad is not None:
-                    param._grad.data = param._grad.data.to(device)
-            elif isinstance(param, dict):
-                for subparam in param.values():
-                    if isinstance(subparam, torch.Tensor):
-                        subparam.data = subparam.data.to(device)
-                        if subparam._grad is not None:
-                            subparam._grad.data = subparam._grad.data.to(device)
+    def _optimizers_to(self, device):
+        for optimizer in self.optimizers:
+            for param in optimizer.state.values():
+                # Not sure there are any global tensors in the state dict
+                if isinstance(param, torch.Tensor):
+                    param.data = param.data.to(device)
+                    if param._grad is not None:
+                        param._grad.data = param._grad.data.to(device)
+                elif isinstance(param, dict):
+                    for subparam in param.values():
+                        if isinstance(subparam, torch.Tensor):
+                            subparam.data = subparam.data.to(device)
+                            if subparam._grad is not None:
+                                subparam._grad.data = subparam._grad.data.to(device)
