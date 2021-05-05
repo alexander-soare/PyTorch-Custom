@@ -416,8 +416,8 @@ class Fitter:
         are lists of tensors
         note that we send targets and outputs to cpu
         """
-        targets = torch.cat(ls_targets, axis=0).cpu()
-        outputs = torch.cat(ls_outputs, axis=0).cpu()
+        targets = torch.cat([t.cpu() for t in ls_targets], axis=0)
+        outputs = torch.cat([o.cpu() for o in ls_outputs], axis=0)
         return targets, outputs
 
     def compute_loss(self, targets, outputs, mode='train'):
