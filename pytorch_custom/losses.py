@@ -3,6 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.loss import _Loss
 
+# TODO needs an overhaul
+# 1. Consistency
+# 2. See if we can make use of pytorch-metric-learning instead of these
+
 # https://github.com/mathiaszinnen/focal_loss_torch/blob/main/focal_loss/focal_loss.py
 class FocalLoss(nn.Module):
     """
