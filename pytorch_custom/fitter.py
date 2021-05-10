@@ -1,6 +1,8 @@
 import gc
 import os
-from typing import Sequence
+import os.path as osp
+from typing import Sequence, Dict, Union, List, Generator, Optional, Tuple
+import math
 
 import numpy as np
 
@@ -8,6 +10,7 @@ from tqdm import tqdm, trange
 import torch
 import torch.cuda.amp as amp
 from torch import nn
+from torch import Tensor
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -26,6 +29,7 @@ class DefaultConfig:
         self.optimizers = torch.optim.AdamW
         self.optimizer_params = {'lr': 3e-4, 'weight_decay': 1e-3}
         self.schedulers = []
+        self.scheduler_params = []
         # means we step the scheduler at each training iteration
         #  the other option is 'epoch'
         self.scheduler_interval = 'step'
@@ -87,16 +91,13 @@ class Fitter:
         [model.to(device) for model in self.models]
         self.data_loaders = data_loaders
         self.device = device
+        # keep original config in case we want to reset it after lr sweep
+        self.original_config = config
         if config is not None:
             self.config = merge_config(config)
         else:
-            config = DefaultConfig()
-        self.reset_history()
-        self.reset_optimizers()
-        self.reset_schedulers()
-        self.best_running_val_loss = np.float('inf')
-        self.best_running_val_score = -np.float('inf')
-        self.epoch = self.config.start_epoch
+            self.config = DefaultConfig()
+        self.reset_fitter_state()
         self._n_train_iters = len(self.data_loaders.train_loader)
         if n_val_iters > 0 and n_val_iters <= len(self.data_loaders.train_loader):
             self.n_val_iters = n_val_iters
@@ -118,7 +119,20 @@ class Fitter:
         assert self.config.score_objective in ['min', 'max'], \
                         "config.score_objective must be either 'min' or 'max'"
 
-        
+    def reset_fitter_state(self):
+        """
+        NOTE: I haven't done a thorough check to make sure I'm not missing anythin
+        """
+        self.reset_history()
+        self.reset_optimizers()
+        self.reset_schedulers()
+        self.best_running_val_loss = np.float('inf')
+        if self.config.score_objective == 'max':
+            self.best_running_val_score = -np.float('inf')
+        elif self.config.score_objective == 'min':
+            self.best_running_val_score = np.float('inf')
+        self.epoch = self.config.start_epoch
+
     def reset_optimizers(self):
         optimizers = self.config.optimizers
         if not isinstance(optimizers, Sequence):
@@ -191,7 +205,8 @@ class Fitter:
             else:
                 # NOTE assumes l2 norm
                 grad_norms.append(torch.norm(torch.stack([torch.norm(
-                        p.grad.detach(), 2) for p in model.parameters()]), 2))
+                        p.grad.detach(), 2) for p in model.parameters() \
+                            if p.grad is not None]), 2))
 
         if self.config.use_amp:
             # scaler.step knows that I previously used scaler.unscale_
@@ -204,17 +219,10 @@ class Fitter:
             
         return loss, grad_norms
 
-    def fit(self, cont=True, overfit=False, save=True, bail=False, verbose=0):
+    def fit(self, cont=True, overfit=False, save=True, bail=np.float('inf'), verbose=0):
 
         if self.epoch == 0 or not cont:
-            self.reset_optimizers()
-            self.reset_schedulers()
-            self.reset_history()
-            self.best_running_val_loss = np.float('inf')
-            if self.config.score_objective == 'max':
-                self.best_running_val_score = -np.float('inf')
-            elif self.config.score_objective == 'min':
-                self.best_running_val_score = np.float('inf')
+            self.reset_fitter_state()
 
         criterion = self.config.criterion
 
@@ -269,8 +277,8 @@ class Fitter:
                     self.history[f'lr_{i}'].append(lr)
                     self.history[f'grad_norm_{i}'].append(grad_norm.item())
 
-                # bail out
-                if bail and train_loss > 100000:
+                # bail out if loss gets too high
+                if train_loss > bail or math.isnan(train_loss):
                     print("Loss blew up. Bailed training.")
                     return
 
@@ -430,6 +438,29 @@ class Fitter:
         """
         raise NotImplementedError()
 
+    def test(self, loader=None, verbose=True) -> Generator[
+                            Tuple[Tensor, Optional[List[str]]], None, None]:
+        """
+        similar to `validate` method, but not expecting targets. simply
+         a generator of outputs and ids if self.id_key is specified
+        Note that this uses `forward_validate` method
+        """
+        [model.eval() for model in self.models]
+        if self.id_key == '':
+            print("Warning: You have not set an id_key. Results won't have ids.")
+        if loader is None:
+            print("Warning: No loader provided. Default to val_loader")
+            loader = self.data_loaders.val_loader
+        # test_bar = tqdm(loader, disable=(not verbose))
+        for data in loader:
+            inputs = self.prepare_inputs_and_targets(data, mode='test')
+            with torch.no_grad():
+                outputs = self.forward_validate(inputs).cpu()
+            if self.id_key != '':
+                yield outputs, list(data[self.id_key])
+            else:
+                yield outputs
+
     def plot_history(self, plot_from=0, sma_period=5):
         fig, ax = plt.subplots(2, 2, figsize=(20,10))
         ax = ax.flatten()
@@ -493,21 +524,60 @@ class Fitter:
             ax[3].legend(legend)
         ax[3].grid()
 
+    def lr_sweep(self, start_lrs: Sequence[float], gamma: float, bail=np.float('inf')):
+        """
+        run an lr sweep starting from `start_lrs` (provide as many lrs as there
+         are optimizers) and with exponential growth rate `gamma` (> 1)
+        `bail` is the loss at which training stops
+        """
+        if not isinstance(start_lrs, Sequence):
+            start_lrs = [start_lrs]
+        assert len(start_lrs) == (n := len(self.optimizers)), \
+            f"Must provide as many starting lrs as there are optimizers {n}"
+        if len(start_lrs) > 1:
+            for i, (lr, _) in enumerate(zip(start_lrs, self.config.optimizer_params)):
+                self.config.optimizer_params[i]['lr'] = lr
+        else:
+            self.config.optimizer_params['lr'] = start_lrs[0]
+        self.config.schedulers = [torch.optim.lr_scheduler.ExponentialLR]*len(start_lrs)
+        self.config.scheduler_params = [{'gamma': gamma}]*len(start_lrs)
+        self.reset_fitter_state()
+        self.fit(verbose=2, save=False, bail=bail)
+        self.plot_lr_sweep()
+        # now clean up
+        if self.original_config is not None:
+            self.config = merge_config(self.original_config)
+        else:
+            self.config = DefaultConfig()
+        self.reset_fitter_state()
+        print("LR sweep done and fitter state has been reset")
+
     def plot_lr_sweep(self, sma_period=5):
-        fig, ax = plt.subplots(figsize=(15,5))
+        num_lrs = len(self.optimizers)
+        fig, ax = plt.subplots(1, num_lrs, figsize=(10*num_lrs,5))
+        if num_lrs > 1:
+            ax = ax.flatten()
+        else:
+            ax = [ax]
         loss = pd.Series(self.history['train_loss'])
-        ax.plot(self.history['lr_0'], loss)
-        ax.plot(self.history['lr_0'][sma_period-1:],
+        for i in range(num_lrs):
+            ax[i].plot(self.history[f'lr_{i}'], loss)
+            ax[i].plot(self.history[f'lr_{i}'][sma_period-1:],
                 loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values)
-        legend = ['exact', 'smoothed']
-        ax.set_xlabel('lr_0')
-        ax.set_ylabel('loss')
-        ax.set_yscale('log')
-        ax.set_xscale('log')
-        ax.grid()
-        ax.xaxis.grid(True, which='minor')
+            legend = ['exact', 'smoothed']
+            ax[i].set_xlabel(f'lr_{i}')
+            ax[i].set_ylabel('loss')
+            ax[i].set_yscale('log')
+            ax[i].set_xscale('log')
+            ax[i].grid()
+            ax[i].xaxis.grid(True, which='minor')
+        plt.tight_layout()
+        plt.show()
 
     def save(self, filename):
+        """
+        saves under checkpoint_dir/run_name
+        """
         save_dct = {
             'epoch': self.epoch,
             'best_running_val_score': self.best_running_val_score,
@@ -519,11 +589,18 @@ class Fitter:
         for i, optimizer in enumerate(self.optimizers):
             save_dct[f'optimizer_{i}_state_dict'] = optimizer.state_dict()
         for i, scheduler in enumerate(self.schedulers):
-            save_dct[f'scheduler_{i}_state_dict'] = scheduler.state_dict()            
-        torch.save(save_dct, os.path.join(self.config.checkpoint_dir, filename))
+            save_dct[f'scheduler_{i}_state_dict'] = scheduler.state_dict()
+        save_dir = osp.join(self.config.checkpoint_dir, self.config.run_name)
+        if not osp.isdir(save_dir):
+            os.mkdir(save_dir)
+        torch.save(save_dct, osp.join(save_dir, filename))
 
-    def load(self, filename):
-        checkpoint = torch.load(os.path.join(self.config.checkpoint_dir, filename),
+    def load(self, file_path: str):
+        """
+        `file_path` is path to checkpoint file under the config's checkpoint
+         dir. Unlike the `save` method, `run_name` is not assumed
+        """
+        checkpoint = torch.load(osp.join(self.config.checkpoint_dir, file_path),
                                     map_location=self.device)
         for i, model in enumerate(self.models):
             try:
