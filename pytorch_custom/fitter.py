@@ -328,7 +328,7 @@ class Fitter:
                 self.save(f'{self.config.run_name}_last.pt')
 
         if save and self.config.run_name:
-            self.save(f'{self.config.run_name}_epoch{epoch:02d}.pt')
+            self.save(f'{self.config.run_name}_epoch{self.epoch:02d}.pt')
 
     def on_start_epoch(self):
         """ tasks to do when starting in epoch, overwrite me
