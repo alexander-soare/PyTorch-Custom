@@ -2,8 +2,42 @@ from itertools import islice
 
 import numpy as np
 from sklearn.model_selection import KFold, StratifiedKFold
+import torch
 from torch.utils.data.sampler import WeightedRandomSampler
 from torch.utils.data import DataLoader
+import albumentations as A
+
+from .image_utils import normalize
+
+
+class Dataset(torch.utils.data.Dataset):
+    """
+    most basic dataset for image task
+    """
+    def __init__(self, df, transforms=[]):
+        self.file_paths = list(df.file_path)
+        self.labels = list(df.label)
+        if len(transforms):
+            self.transforms = A.Compose(transforms)
+        else:
+            self.transforms = None
+
+    def __len__(self):
+        return len(self.file_paths)
+
+    def __getitem__(self, ix):
+        target = self.labels[ix]
+        img = self.load_image(self.file_paths[ix])
+        if self.transforms is not None:
+            img = self.transforms(image=img)['image']
+        img = normalize(img)
+        return {'img': torch.tensor(img).permute(2,0,1).float(),
+                'target': torch.tensor(target)}
+
+    def load_image(self, file_path):
+        img = cv2.imread(file_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        return img
 
 
 class DataLoaders:
