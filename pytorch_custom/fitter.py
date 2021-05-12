@@ -61,11 +61,10 @@ def merge_config(custom_config):
 
 class Fitter:
     """
-    Must override:
-     - compute_score
     May need to override:
      - prepare_inputs_and_targets
      - compute_loss
+     - compute_scores
      - collate_targets_and_outputs (for validation)
      - forward_train (if you have more than one model)
      - forward_validate (if you have more than one model)
@@ -163,7 +162,7 @@ class Fitter:
             self.schedulers.append(sched(opt, **sps))
 
     def reset_history(self):
-        self.history = {'train_loss': [], 'val_loss': [], 'val_score': []}
+        self.history = {'train_loss': [], 'val_loss': []}
         optimizers = self.config.optimizers
         if not isinstance(optimizers, Sequence):
             optimizers = [optimizers]
@@ -285,28 +284,30 @@ class Fitter:
                 # validate every val_itrs
                 if (self.train_step + 1) % self.n_val_iters == 0:
                     if self.data_loaders.val_loader is not None:
-                        avg_val_loss, avg_val_score = self.validate(
+                        avg_val_loss, avg_val_scores = self.validate(
                                                         verbose=(verbose == 2))
                     else:
-                        avg_val_loss, avg_val_score = np.nan, np.nan
+                        avg_val_loss, avg_val_scores = np.nan, []
 
-                    # save best
                     self.history['val_loss'].append(avg_val_loss.item())
-                    self.history['val_score'].append(avg_val_score)
+                    for i, s in enumerate(avg_val_scores):
+                        if not f'val_score_{i}' in self.history:
+                            self.history[f'val_score_{i}'] = []
+                        self.history[f'val_score_{i}'].append(s)
 
                     # TODO decide if I want to use running avg
                     #  and if so, make it possible to decide on length
-                    running_val_loss = np.mean(self.history['val_loss'][-1:])
-                    running_val_score = np.mean(self.history['val_score'][-1:])
-
+                    running_val_loss = np.mean(self.history['val_loss'][-1:])                        
                     if save and running_val_loss <= self.best_running_val_loss:
                         self.best_running_val_loss = running_val_loss
                         self.save(f'{self.config.run_name}_best_loss.pt')
 
-                    sign = 1 if self.config.score_objective == 'min' else -1
-                    if save and sign*running_val_score <= sign*self.best_running_val_score:
-                        self.best_running_val_score = running_val_score
-                        self.save(f'{self.config.run_name}_best_score.pt')
+                    if 'val_score_0' in self.history:
+                        running_val_score = np.mean(self.history['val_score_0'][-1:])
+                        sign = 1 if self.config.score_objective == 'min' else -1
+                        if save and sign*running_val_score <= sign*self.best_running_val_score:
+                            self.best_running_val_score = running_val_score
+                            self.save(f'{self.config.run_name}_best_score.pt')
                         
                     [model.train() for model in self.models]
 
@@ -319,10 +320,11 @@ class Fitter:
                     scheduler.step(*args)
 
             if verbose == 1:
+                extra_kwargs = {f'val_score_{i}': f"{s:.3f}" for i, s \
+                                                in enumerate(avg_val_scores)}
                 epoch_bar.set_postfix(train_loss=f"{(total_train_loss/train_preds):0.3f}",
                                 val_loss=f"{avg_val_loss:.3f}", lr=f"{lr:.2E}",
-                                val_score=f"{avg_val_score:.3f}",
-                                val_acc=f"{avg_val_score:.3f}")
+                                **extra_kwargs)
             
             if verbose == 2:
                 msg = "\nAverage train / val loss was "
@@ -358,13 +360,13 @@ class Fitter:
         """
         return self.models[0](*inputs)
 
-    def validate(self, inspect=False, loader=None, use_train_loader=False, verbose=True):
+    def validate(self, inspect=False, loader=None, use_train_loader=False,
+                    verbose=True) -> Tuple[float, List[float]]:
         """
         inspects lets us retrieve more information than just the validation score and loss
         if `loader` is not provide, `self.val_loader` is used by default
         if `use_train_loader` is set, `self.train_loader` is used
         """
-        criterion = self.config.criterion
         [model.eval() for model in self.models]
         ls_outputs = []
         ls_targets = []
@@ -391,22 +393,27 @@ class Fitter:
         with torch.no_grad():
             avg_val_loss = self.compute_loss(targets, outputs, mode='val')
 
-        avg_val_score = self.compute_score(targets, outputs, mode='val')
+        avg_val_scores = self.compute_scores(targets, outputs, mode='val')
+        if not isinstance(avg_val_scores, Sequence):
+            # backwards compatibility
+            avg_val_scores = [avg_val_scores]
 
         if verbose:
-            print(f'avg_val_loss: {avg_val_loss:.3f}, ' +
-                  f'avg_val_score: {avg_val_score:.3f}',
+            print(f'avg_val_loss: {avg_val_loss:.3f}' +
+                  ''.join([f', avg_val_score_{i}: {s:.3f}' \
+                                    for i, s in enumerate(avg_val_scores)]),
                   flush=True)
         if inspect:
-            ret = {'loss': avg_val_loss, 'score': avg_val_score,
+            ret = {'loss': avg_val_loss,
                     'targets': targets, 'outputs': outputs}
+            ret.update({f'score_{i}': s for i, s in enumerate(avg_val_scores)})
             if self.id_key != '':
                 ret['id'] = ids
             return ret
 
         self.on_validate_end(targets, outputs)
 
-        return avg_val_loss, avg_val_score
+        return avg_val_loss, avg_val_scores
 
     def on_validate_end(self, targets, outputs):
         """
@@ -433,10 +440,22 @@ class Fitter:
         """
         return self.config.criterion(outputs, targets)
 
-    def compute_score(self, targets, outputs, mode='val'):
-        """ must be overidden
+    def compute_score(self, targets, outputs, mode='val') -> Union[Sequence[float], float]:
         """
-        raise NotImplementedError()
+        backwards compatibility
+        """
+        return []
+
+    def compute_scores(self, targets, outputs, mode='val') -> Union[Sequence[float], float]:
+        """
+        return a list of scores
+        Note that the order of scores affects two things:
+        1. For the purpose of saving on best score, the first of the scores is
+            used.
+        2. For the purposes of plotting scores, teh first of the scores is used
+        """
+        # backwards compatibility if not overriden
+        return self.compute_score(targets, outputs, mode='val')
 
     def test(self, loader=None, verbose=True) -> Generator[
                             Tuple[Tensor, Optional[List[str]]], None, None]:
@@ -488,16 +507,16 @@ class Fitter:
         ax[0].set_title(title)
 
         # val metrics
-        if len(self.history['val_score']):
+        if len(self.history['val_score_0']):
             ax[1].plot(x_axis[(vals_per_epoch * plot_from)//self._n_train_iters:],
-                    self.history['val_score'][(vals_per_epoch * plot_from)//self._n_train_iters:])
+                    self.history['val_score_0'][(vals_per_epoch * plot_from)//self._n_train_iters:])
             ax[1].set_xlabel('epoch')
             ax[1].set_ylabel('score')
             ax[1].grid()
             if self.config.score_objective == 'max':
-                title = f"Best val score: {max(self.history['val_score']):0.3f}"
+                title = f"Best val score: {max(self.history['val_score_0']):0.3f}"
             elif self.config.score_objective == 'min':
-                title = f"Best val score: {min(self.history['val_score']):0.3f}"
+                title = f"Best val score: {min(self.history['val_score_0']):0.3f}"
             ax[1].set_title(title)
 
         # lrs
