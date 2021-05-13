@@ -223,8 +223,6 @@ class Fitter:
         if self.epoch == 0 or not cont:
             self.reset_fitter_state()
 
-        criterion = self.config.criterion
-
         overfit_data = None # in case we want to try overfitting to one batch
 
         epoch_bar = trange(self.epoch, self.config.end_epoch, disable=(verbose != 1))
@@ -542,6 +540,7 @@ class Fitter:
         if len(legend):
             ax[3].legend(legend)
         ax[3].grid()
+        return fig, ax
 
     def lr_sweep(self, start_lrs: Sequence[float], gamma: float, bail=np.float('inf')):
         """
@@ -583,7 +582,6 @@ class Fitter:
             ax[i].plot(self.history[f'lr_{i}'], loss)
             ax[i].plot(self.history[f'lr_{i}'][sma_period-1:],
                 loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values)
-            legend = ['exact', 'smoothed']
             ax[i].set_xlabel(f'lr_{i}')
             ax[i].set_ylabel('loss')
             ax[i].set_yscale('log')
@@ -592,6 +590,7 @@ class Fitter:
             ax[i].xaxis.grid(True, which='minor')
         plt.tight_layout()
         plt.show()
+        return fig, ax
 
     def save(self, filename):
         """
@@ -651,8 +650,14 @@ class Fitter:
             print("Warning: Could not load epoch number")
         try:
             self.history = checkpoint['history']
+            # backwards compatibility
+            if 'val_score' in self.history:
+                self.history['val_score_0'] = self.history['val_score']
             self.best_running_val_loss = min(self.history['val_loss'])
-            self.best_running_val_score = max(self.history['val_score'])
+            if self.config.score_objective == 'max':
+                self.best_running_val_score = max(self.history['val_score_0'])
+            else:
+                self.best_running_val_score = min(self.history['val_score_0'])
         except:
             print("Warning: Could not load history")
 
