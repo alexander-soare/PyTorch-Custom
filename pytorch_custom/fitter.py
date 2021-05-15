@@ -229,10 +229,13 @@ class Fitter:
             
         return loss, grad_norms
 
-    def fit(self, cont=True, overfit=False, save=True, bail=np.float('inf'), verbose=0):
-
-        if self.epoch == 0 or not cont:
-            self.reset_fitter_state()
+    def fit(self, overfit=False, skip_to_step=0, save=True,
+                    bail=np.float('inf'), verbose=0):
+        """
+        `skip_to_step` cycles through the train loader without training
+            until that step is reached. Useful for diagnosing a bug appearing
+            at a specific location in the train cycle
+        """
 
         overfit_data = None # in case we want to try overfitting to one batch
 
@@ -249,6 +252,10 @@ class Fitter:
             train_bar.set_description(f'Epoch {epoch:03d}')
             self.train_step = 0
             for data in train_bar:
+                if skip_to_step > 0 and self.train_step < skip_to_step:
+                    self.train_step += 1
+                    continue
+
                 if overfit:
                     if overfit_data is None:
                         overfit_data = data
