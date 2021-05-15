@@ -293,9 +293,16 @@ class Fitter:
                     self.history[f'grad_norm_{i}'].append(grad_norm.item())
 
                 # bail out if loss gets too high
-                if train_loss > bail or math.isnan(train_loss):
+                if train_loss > bail:
                     print("Loss blew up. Bailed training.")
                     return
+
+                if math.isnan(train_loss):
+                    msg = "WARNING: NaN loss."
+                    if self.config.use_amp:
+                        msg += " Heads up: this may be a side effect of using AMP."
+                        msg += " If so, the gradient scaler should skip this step."
+                    print(msg)
 
                 # validate every val_itrs
                 if (self.train_step + 1) % self.n_val_iters == 0:
@@ -569,7 +576,7 @@ class Fitter:
         if not isinstance(start_lrs, Sequence):
             start_lrs = [start_lrs]
         assert len(start_lrs) == (n := len(self.optimizers)), \
-            f"Must provide as many starting lrs as there are optimizers {n}"
+            f"Must provide as many starting lrs as there are optimizers: {n}"
         if len(start_lrs) > 1:
             for i, (lr, _) in enumerate(zip(start_lrs, self.config.optimizer_params)):
                 self.config.optimizer_params[i]['lr'] = lr
