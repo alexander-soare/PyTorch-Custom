@@ -145,6 +145,17 @@ class Fitter:
         for opt, ops, m in zip(optimizers, optimizer_params, self.models):
             self.optimizers.append(opt(m.parameters(), **ops))
         
+    def set_lrs(self, lrs: Union[Sequence[float], float]):
+        """ manually set the lrs of the optimizers
+        """
+        if not isinstance(lrs, Sequence):
+            lrs = [lrs]
+        assert len(lrs) == len(self.optimizers), \
+            "Must provide as many lrs as there are optimizers"
+        for lr, optim in zip(lrs, self.optimizers):
+            for g in optim.param_groups:
+                g['lr'] = lr
+
     def reset_schedulers(self):
         schedulers = self.config.schedulers
         if not isinstance(schedulers, Sequence):
