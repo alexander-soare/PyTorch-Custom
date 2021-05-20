@@ -1,7 +1,7 @@
 import gc
 import os
 import os.path as osp
-from typing import Sequence, Dict, Union, List, Generator, Optional, Tuple
+from typing import Sequence, Union, List, Generator, Optional, Tuple
 import math
 
 import numpy as np
@@ -173,7 +173,7 @@ class Fitter:
             self.schedulers.append(sched(opt, **sps))
 
     def reset_history(self):
-        self.history = {'train_loss': [], 'val_loss': []}
+        self.history = {}
         optimizers = self.config.optimizers
         if not isinstance(optimizers, Sequence):
             optimizers = [optimizers]
@@ -197,7 +197,11 @@ class Fitter:
 
         with self.train_forward_context():
             outputs = self.forward_train(inputs, targets)
-            loss = self.compute_loss(targets, outputs, mode='train')
+            losses = self.compute_losses(targets, outputs, mode='train')
+            if not isinstance(losses, Sequence):
+                # backwards compatibility
+                losses = [losses]
+            loss = sum(losses)
 
         if self.config.use_amp:
             self.scaler.scale(loss).backward()
@@ -227,10 +231,10 @@ class Fitter:
             for optimizer in self.optimizers:
                 optimizer.step()
             
-        return loss, grad_norms
+        return losses, grad_norms
 
     def fit(self, overfit=False, skip_to_step=0, save=True,
-                    bail=np.float('inf'), verbose=0):
+                    bail=float('inf'), verbose=0):
         """
         `skip_to_step` cycles through the train loader without training
             until that step is reached. Useful for diagnosing a bug appearing
@@ -246,7 +250,7 @@ class Fitter:
             self.on_start_epoch()
             # train
             [model.train() for model in self.models]
-            total_train_loss = 0.0
+            total_train_losses = []
             train_preds = 0
             train_bar = tqdm(self.data_loaders.train_loader, disable=(verbose != 2))
             train_bar.set_description(f'Epoch {epoch:03d}')
@@ -266,7 +270,7 @@ class Fitter:
                 inputs, targets = self.prepare_inputs_and_targets(data, mode='train')
 
                 # train step
-                loss, grad_norms = self.train_iteration(inputs, targets)
+                losses, grad_norms = self.train_iteration(inputs, targets)
 
                 # scheduler
                 # first keep track of lr to report on it
@@ -280,47 +284,70 @@ class Fitter:
 
                 # logging
                 batch_size = inputs[0].shape[0]
-                train_loss = loss.item()
-                total_train_loss += train_loss * batch_size # unaverage
+                with torch.no_grad():
+                    # train_losses is just the item() version of losses for reporting
+                    train_losses = [l.item() for l in losses]
+                for i, tl in enumerate(train_losses):
+                    if len(total_train_losses) == 0:
+                        # make train losses the right length
+                        total_train_losses = [0.] * len(train_losses)
+                    while len(total_train_losses) < i+1:
+                        total_train_losses.append(0.)
+                    total_train_losses[i] += tl * batch_size # unaverage
                 train_preds += batch_size
                 kwargs = {f'lr_{i}': f'{lr:.2E}' for i, lr in enumerate(lrs)}
                 kwargs.update({f'grad_norm_{i}': f'{grad_norm:.3f}' \
                                 for i, grad_norm in enumerate(grad_norms)})
-                train_bar.set_postfix(train_loss=f'{train_loss:.5f}', **kwargs)
-                self.history['train_loss'].append(train_loss)
+                kwargs.update({f'train_loss_{i}': f'{l:.3f}' \
+                                for i, l in enumerate(train_losses)})
+                train_bar.set_postfix(**kwargs)
+                for i, l in enumerate(train_losses):
+                    if not f'train_loss_{i}' in self.history:
+                        self.history[f'train_loss_{i}'] = []
+                    self.history[f'train_loss_{i}'].append(l)
                 for i, (lr, grad_norm) in enumerate(zip(lrs, grad_norms)):
                     self.history[f'lr_{i}'].append(lr)
                     self.history[f'grad_norm_{i}'].append(grad_norm.item())
 
                 # bail out if loss gets too high
-                if train_loss > bail:
-                    print("Loss blew up. Bailed training.")
-                    return
+                for i, l in enumerate(train_losses):
+                    if l > bail:
+                        print(f"loss_{i} blew up. Bailed training.")
+                        return
 
-                if math.isnan(train_loss):
-                    msg = "WARNING: NaN loss."
-                    if self.config.use_amp:
-                        msg += " Heads up: this may be a side effect of using AMP."
-                        msg += " If so, the gradient scaler should skip this step."
-                    print(msg)
+                    if math.isnan(l):
+                        msg = f"WARNING: NaN loss_{i}"
+                        if self.config.use_amp:
+                            msg += " Heads up: this may be a side effect of using AMP."
+                            msg += " If so, the gradient scaler should skip this step."
+                        print(msg)
+                        # if bail is set to a specific number, bail
+                        if bail < float('inf'):
+                            return
 
                 # validate every val_itrs
                 if (self.train_step + 1) % self.n_val_iters == 0:
                     if self.data_loaders.val_loader is not None:
-                        avg_val_loss, avg_val_scores = self.validate(
-                                                        verbose=(verbose == 2))
+                        val_losses, val_scores = \
+                                        self.validate(verbose=(verbose == 2))
                     else:
-                        avg_val_loss, avg_val_scores = np.nan, []
+                        val_losses, val_scores = [], []
 
-                    self.history['val_loss'].append(avg_val_loss.item())
-                    for i, s in enumerate(avg_val_scores):
+                    for i, l in enumerate(val_losses):
+                        if not f'val_loss_{i}' in self.history:
+                            self.history[f'val_loss_{i}'] = []
+                        self.history[f'val_loss_{i}'].append(l.item())
+                    for i, s in enumerate(val_scores):
                         if not f'val_score_{i}' in self.history:
                             self.history[f'val_score_{i}'] = []
                         self.history[f'val_score_{i}'].append(s)
 
+                    # best loss is based on sum of losses
                     # TODO decide if I want to use running avg
                     #  and if so, make it possible to decide on length
-                    running_val_loss = np.mean(self.history['val_loss'][-1:])                        
+                    running_val_loss = 0
+                    for i in range(len(val_losses)):
+                        running_val_loss += np.mean(self.history[f'val_loss_{i}'][-1:])                        
                     if save and running_val_loss <= self.best_running_val_loss:
                         self.best_running_val_loss = running_val_loss
                         self.save(f'{self.config.run_name}_best_loss.pt')
@@ -343,17 +370,21 @@ class Fitter:
                     scheduler.step(*args)
 
             if verbose == 1:
-                extra_kwargs = {f'val_score_{i}': f"{s:.3f}" for i, s \
-                                                in enumerate(avg_val_scores)}
-                epoch_bar.set_postfix(train_loss=f"{(total_train_loss/train_preds):0.3f}",
-                                val_loss=f"{avg_val_loss:.3f}", lr=f"{lr:.2E}",
-                                **extra_kwargs)
+                kwargs = {f'val_loss_{i}': f"{l.item():.3f}" for i, l \
+                                                in enumerate(val_losses)}
+                kwargs.update({f'val_score_{i}': f"{s:.3f}" for i, s \
+                                                in enumerate(val_scores)})
+                kwargs.update({f'train_loss_{i}': f"{l/train_preds:.3f}" \
+                                    for i, l in enumerate(total_train_losses)})
+                kwargs.update({f'lr_{i}': f"{lr:.2E}" for i, lr in enumerate(lrs)})
+                epoch_bar.set_postfix(**kwargs)
             
             if verbose == 2:
-                msg = "\nAverage train / val loss was "
-                msg += f"{text_styles.BOLD}{(total_train_loss/train_preds):0.5f}{text_styles.ENDC}"
-                msg += f" / {text_styles.BOLD}{(avg_val_loss):0.5f}{text_styles.ENDC}. "
-                print(msg + '\n', flush=True)
+                for i, (tl, vl)  in enumerate(zip(total_train_losses, val_losses)):
+                    msg = f"\nAverage train / val loss {i}"
+                    msg += f"{text_styles.BOLD}{(tl/train_preds):.5f}{text_styles.ENDC}"
+                    msg += f" / {text_styles.BOLD}{(vl):.5f}{text_styles.ENDC}. "
+                    print(msg + '\n', flush=True)
 
             self.epoch = epoch + 1
 
@@ -414,29 +445,33 @@ class Fitter:
         targets, outputs = self.collate_targets_and_outputs(ls_targets, ls_outputs)
 
         with torch.no_grad():
-            avg_val_loss = self.compute_loss(targets, outputs, mode='val')
+            losses = self.compute_losses(targets, outputs, mode='val')
+            if not isinstance(losses, Sequence):
+                # backwards compatibility
+                losses = [losses]
 
-        avg_val_scores = self.compute_scores(targets, outputs, mode='val')
-        if not isinstance(avg_val_scores, Sequence):
+        scores = self.compute_scores(targets, outputs, mode='val')
+        if not isinstance(scores, Sequence):
             # backwards compatibility
-            avg_val_scores = [avg_val_scores]
+            scores = [scores]
 
         if verbose:
-            print(f'avg_val_loss: {avg_val_loss:.3f}' +
-                  ''.join([f', avg_val_score_{i}: {s:.3f}' \
-                                    for i, s in enumerate(avg_val_scores)]),
+            print(''.join([f', val_loss_{i}: {s:.3f}' \
+                                for i, s in enumerate(losses)]) + \
+                    ''.join([f', val_score_{i}: {s:.3f}' \
+                                    for i, s in enumerate(scores)]),
                   flush=True)
         if inspect:
-            ret = {'loss': avg_val_loss,
-                    'targets': targets, 'outputs': outputs}
-            ret.update({f'score_{i}': s for i, s in enumerate(avg_val_scores)})
+            ret = {f'loss_{i}': l for i, l in enumerate(losses)}
+            ret.update({'targets': targets, 'outputs': outputs})
+            ret.update({f'score_{i}': s for i, s in enumerate(scores)})
             if self.id_key != '':
                 ret['id'] = ids
             return ret
 
         self.on_validate_end(targets, outputs)
 
-        return avg_val_loss, avg_val_scores
+        return losses, scores
 
     def on_validate_end(self, targets, outputs):
         """
@@ -459,9 +494,12 @@ class Fitter:
         return targets, outputs
 
     def compute_loss(self, targets, outputs, mode='train'):
-        """ could override this
-        """
-        return self.config.criterion(outputs, targets)
+        # backwards compatibility
+        return [self.config.criterion(outputs, targets)]
+
+    def compute_losses(self, targets, outputs, mode='train'):
+        # backwards compatibility
+        return self.compute_loss(targets, outputs, mode=mode)
 
     def compute_score(self, targets, outputs, mode='val') -> Union[Sequence[float], float]:
         """
@@ -508,25 +546,39 @@ class Fitter:
         ax = ax.flatten()
 
         # train loss
-        x_axis = np.arange(1, len(self.history['train_loss'])+1)/self._n_train_iters
-        train_loss = pd.Series(self.history['train_loss'][plot_from:])
-        ax[0].plot(x_axis[plot_from:], train_loss, alpha=0.5)
-        ax[0].plot(x_axis[plot_from:][sma_period-1:],
-            train_loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values)
+        max_losses = 3 # maximum number of loss traces to plot
+        x_axis = np.arange(1, len(self.history[f'train_loss_0'])+1)/self._n_train_iters
+        for i in range(max_losses+1):
+            if f'train_loss_{i}' not in self.history:
+                break
+            if i == max_losses:
+                print(f"Warning: Max number of loss traces ({max_losses}) " \
+                            + "exceeded. Not all losses are plotted")
+                break
+            train_loss = pd.Series(self.history[f'train_loss_{i}'][plot_from:])
+            ax[0].plot(x_axis[plot_from:], train_loss, alpha=0.5, label=f'train_loss_{i}')
+            ax[0].plot(x_axis[plot_from:][sma_period-1:],
+                train_loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values,
+                label=f'train_loss_{i}_smoothed')
         
         # val loss
         vals_per_epoch = self._n_train_iters//self.n_val_iters
-        x_axis = np.arange(1, len(self.history['val_loss']) + 1)/vals_per_epoch
-        ax[0].plot(x_axis[(vals_per_epoch * plot_from)//self._n_train_iters:],
-            self.history['val_loss'][(vals_per_epoch * plot_from)//self._n_train_iters:])
-        ax[0].legend(['train loss', 'train loss smoothed', 'val loss'])
+        x_axis = np.arange(1, len(self.history['val_loss_0']) + 1)/vals_per_epoch
+        for i in range(max_losses+1) or i == max_losses:
+            if f'val_loss_{i}' not in self.history:
+                break
+            ax[0].plot(x_axis[(vals_per_epoch * plot_from)//self._n_train_iters:],
+                self.history[f'val_loss_{i}'][(vals_per_epoch * plot_from)//self._n_train_iters:],
+                label=f'val_loss_{i}')
+
+        ax[0].legend()
         ax[0].set_xlabel('epoch')
         ax[0].set_ylabel('loss')
         ax[0].grid()
 
-        title = f"Best train loss: {min(self.history['train_loss']):0.3f}"
-        if len(self.history['val_loss']):
-            title += f". Best val loss: {min(self.history['val_loss']):0.3f}"
+        title = f"Best train_loss_0: {min(self.history['train_loss_0']):0.3f}"
+        if len(self.history['val_loss_0']):
+            title += f". Best val_loss_0: {min(self.history['val_loss_0']):0.3f}"
         ax[0].set_title(title)
 
         # val metrics
@@ -537,13 +589,13 @@ class Fitter:
             ax[1].set_ylabel('score')
             ax[1].grid()
             if self.config.score_objective == 'max':
-                title = f"Best val score: {max(self.history['val_score_0']):0.3f}"
+                title = f"Best val_score_0: {max(self.history['val_score_0']):0.3f}"
             elif self.config.score_objective == 'min':
-                title = f"Best val score: {min(self.history['val_score_0']):0.3f}"
+                title = f"Best val_score_0: {min(self.history['val_score_0']):0.3f}"
             ax[1].set_title(title)
 
         # lrs
-        x_axis = np.arange(1, len(self.history['train_loss'])+1)/self._n_train_iters
+        x_axis = np.arange(1, len(self.history['train_loss_0'])+1)/self._n_train_iters
         legend = []
         for i in range(len(self.optimizers)):
             ax[2].plot(x_axis[plot_from:], self.history[f'lr_{i}'][plot_from:])
@@ -555,7 +607,7 @@ class Fitter:
         ax[2].grid()
 
         # grad norms
-        x_axis = np.arange(1, len(self.history['train_loss'])+1)/self._n_train_iters
+        x_axis = np.arange(1, len(self.history['train_loss_0'])+1)/self._n_train_iters
         legend = []
         for i in range(len(self.optimizers)):
             ax[3].plot(x_axis[plot_from:], self.history[f'grad_norm_{i}'][plot_from:])
@@ -602,15 +654,25 @@ class Fitter:
             ax = ax.flatten()
         else:
             ax = [ax]
-        loss = pd.Series(self.history['train_loss'])
+        
+        max_losses = 3 # maximum number of loss traces to plot
         for i in range(num_lrs):
-            ax[i].plot(self.history[f'lr_{i}'], loss)
-            ax[i].plot(self.history[f'lr_{i}'][sma_period-1:],
-                loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values)
+            for j in range(max_losses+1):
+                if f'train_loss_{j}' not in self.history:
+                    break
+                if i == max_losses:
+                    print(f"Warning: Max number of loss traces ({max_losses}) " \
+                                + "exceeded. Not all losses are plotted")
+                    break
+                loss = pd.Series(self.history[f'train_loss_{j}'])
+                ax[i].plot(self.history[f'lr_{i}'], loss, label=f'loss_{j}')
+                # ax[i].plot(self.history[f'lr_{i}'][sma_period-1:],
+                #     loss.rolling(window=sma_period).mean().iloc[sma_period-1:].values)
             ax[i].set_xlabel(f'lr_{i}')
             ax[i].set_ylabel('loss')
             ax[i].set_yscale('log')
             ax[i].set_xscale('log')
+            ax[i].legend()
             ax[i].grid()
             ax[i].xaxis.grid(True, which='minor')
         plt.tight_layout()
@@ -678,11 +740,17 @@ class Fitter:
             # backwards compatibility
             if 'val_score' in self.history:
                 self.history['val_score_0'] = self.history['val_score']
-            self.best_running_val_loss = min(self.history['val_loss'])
             if self.config.score_objective == 'max':
                 self.best_running_val_score = max(self.history['val_score_0'])
             else:
                 self.best_running_val_score = min(self.history['val_score_0'])
+            # backwards compatibility
+            if 'val_loss' in self.history:
+                self.history['val_loss_0'] = self.history['val_loss']
+            self.best_running_val_loss = min(self.history['val_loss_0'])
+            # backwards compatibility
+            if 'train_loss' in self.history:
+                self.history['train_loss_0'] = self.history['train_loss']
         except:
             print("Warning: Could not load history")
 
