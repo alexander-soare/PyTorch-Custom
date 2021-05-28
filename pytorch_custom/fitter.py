@@ -538,7 +538,7 @@ class Fitter:
         for data in loader:
             inputs = self.prepare_inputs_and_targets(data, mode='test')
             with torch.no_grad():
-                outputs = self.forward_validate(inputs).cpu()
+                outputs = self.forward_validate(inputs)
             if self.id_key != '':
                 yield outputs, list(data[self.id_key])
             else:
