@@ -163,6 +163,9 @@ class Fitter:
         if len(schedulers) > 0:
             assert len(schedulers) == len(self.models), \
                     "Must provide as many schedulers as models"
+        else:
+            self.schedulers = []
+            return
         scheduler_params = self.config.scheduler_params
         if not isinstance(scheduler_params, Sequence):
             scheduler_params = [scheduler_params]
