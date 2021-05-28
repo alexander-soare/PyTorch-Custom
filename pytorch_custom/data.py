@@ -6,11 +6,12 @@ import torch
 from torch.utils.data.sampler import WeightedRandomSampler
 from torch.utils.data import DataLoader
 import albumentations as A
+import cv2
 
 from .image_utils import normalize
 
 
-class Dataset(torch.utils.data.Dataset):
+class ImageDataset(torch.utils.data.Dataset):
     """
     most basic dataset for image task
     """
