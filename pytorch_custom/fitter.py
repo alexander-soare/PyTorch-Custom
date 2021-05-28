@@ -35,7 +35,7 @@ class DefaultConfig:
         self.scheduler_interval = 'step'
         # whether or not the scheduler requires the step or epoch as an input
         #  argument
-        self.scheduler_interval_arg = False
+        self.scheduler_interval_eval = '[]'
         self.criterion = torch.nn.BCEWithLogitsLoss()
         self.clip_grad_norm = -1
         # automatic mixed precision https://pytorch.org/docs/stable/notes/amp_examples.html
@@ -279,7 +279,7 @@ class Fitter:
                     lrs.append(optimizer.param_groups[0]['lr'])
                 for scheduler in self.schedulers:
                     if self.config.scheduler_interval == 'step':
-                        args = [self.train_step] if self.config.scheduler_interval_arg else []
+                        args = eval(self.config.scheduler_interval_eval)
                         scheduler.step(*args)
 
                 # logging
@@ -366,7 +366,7 @@ class Fitter:
             # step scheduler on epoch
             if self.config.scheduler_interval == 'epoch':
                 for scheduler in self.schedulers:
-                    args = [self.epoch] if self.config.scheduler_interval_arg else []
+                    args = eval(self.config.scheduler_interval_eval)
                     scheduler.step(*args)
 
             if verbose == 1:
