@@ -585,7 +585,7 @@ class Fitter:
         ax[0].set_title(title)
 
         # val metrics
-        if len(self.history['val_score_0']):
+        if 'val_score_0' in self.history and len(self.history['val_score_0']):
             ax[1].plot(x_axis[(vals_per_epoch * plot_from)//self._n_train_iters:],
                     self.history['val_score_0'][(vals_per_epoch * plot_from)//self._n_train_iters:])
             ax[1].set_xlabel('epoch')
@@ -743,10 +743,10 @@ class Fitter:
             # backwards compatibility
             if 'val_score' in self.history:
                 self.history['val_score_0'] = self.history['val_score']
-            if self.config.score_objective == 'max':
-                self.best_running_val_score = max(self.history['val_score_0'])
-            else:
-                self.best_running_val_score = min(self.history['val_score_0'])
+                if self.config.score_objective == 'max':
+                    self.best_running_val_score = max(self.history['val_score_0'])
+                else:
+                    self.best_running_val_score = min(self.history['val_score_0'])
             # backwards compatibility
             if 'val_loss' in self.history:
                 self.history['val_loss_0'] = self.history['val_loss']
