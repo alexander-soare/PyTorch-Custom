@@ -69,7 +69,8 @@ class WarmupReduceLROnPlateau(ReduceLROnPlateau):
                         (self.itr/self.warmup_itrs)
                 param_group['lr'] = new_lr
         elif self.itr == self.warmup_itrs:
-            param_group['lr'] = self.default_lrs[i]
+            for i, param_group in enumerate(self.optimizer.param_groups):
+                param_group['lr'] = self.default_lrs[i]
         else:
             super.step(metrics)
         self.itr += 1
