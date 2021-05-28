@@ -384,7 +384,7 @@ class Fitter:
             
             if verbose == 2:
                 for i, (tl, vl)  in enumerate(zip(total_train_losses, val_losses)):
-                    msg = f"\nAverage train / val loss {i}"
+                    msg = f"\nAverage train / val loss {i} "
                     msg += f"{text_styles.BOLD}{(tl/train_preds):.5f}{text_styles.ENDC}"
                     msg += f" / {text_styles.BOLD}{(vl):.5f}{text_styles.ENDC}. "
                     print(msg + '\n', flush=True)
