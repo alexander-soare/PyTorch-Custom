@@ -633,8 +633,9 @@ class Fitter:
         """
         if not isinstance(start_lrs, Sequence):
             start_lrs = [start_lrs]
-        assert len(start_lrs) == (n := len(self.optimizers)), \
-            f"Must provide as many starting lrs as there are optimizers: {n}"
+        
+        assert len(start_lrs) == len(self.optimizers), \
+            f"Must provide as many starting lrs as there are optimizers: {len(self.optimizers)}"
         if len(start_lrs) > 1:
             for i, (lr, _) in enumerate(zip(start_lrs, self.config.optimizer_params)):
                 self.config.optimizer_params[i]['lr'] = lr
