@@ -36,7 +36,7 @@ class DefaultConfig:
         # whether or not the scheduler requires the step or epoch as an input
         #  argument
         self.scheduler_interval_eval = '[]'
-        self.criterion = torch.nn.BCEWithLogitsLoss()
+        self.criteria = [torch.nn.BCEWithLogitsLoss()]
         self.clip_grad_norm = -1
         # automatic mixed precision https://pytorch.org/docs/stable/notes/amp_examples.html
         self.use_amp = False
@@ -54,6 +54,7 @@ def merge_config(custom_config):
     try:
         config.schedulers = config.scheduler
         config.optimizers = config.optimizer
+        config.criteria = config.criterion
     except AttributeError:
         pass
     return config
@@ -498,7 +499,9 @@ class Fitter:
 
     def compute_loss(self, targets, outputs, mode='train'):
         # backwards compatibility
-        return [self.config.criterion(outputs, targets)]
+        if not isinstance(self.config.criteria, Sequence):
+            self.config.criteria = [self.config.criteria]
+        return [c(outputs, targets) for c in self.config.criteria]
 
     def compute_losses(self, targets, outputs, mode='train'):
         # backwards compatibility
