@@ -1,3 +1,4 @@
+import warnings
 import torch
 from torch import LongTensor, FloatTensor
 import torch.nn as nn
@@ -86,7 +87,7 @@ class CELabelSmoothingLoss(nn.Module):
     """
     Cross Entropy Loss with label smoothing, takes logits
     """
-    def __init__(self, smoothing, n_classes, dim=-1):
+    def __init__(self, smoothing, n_classes, dim=-1, ignore_index=-100):
         """
         `n_classes` is number of classes
         `smoothing` is the smoothing factor. How much less confident than 100%
@@ -96,12 +97,18 @@ class CELabelSmoothingLoss(nn.Module):
         self.smoothing = smoothing
         self.n_classes = n_classes
         self.dim = dim
+        self.ignore_index = ignore_index
+        if ignore_index >= 0:
+            warnings.warn("ignore_index has not been tested yet")
 
     def forward(self, input, target):
         """ expects target to be categorical, and input to be logits
         """
         x = input.log_softmax(dim=self.dim)
         with torch.no_grad():
+            if self.ignore_index >= 0:
+                target = target[target != self.ignore_index]
+                input = input[input != self.ignore_index]
             true_dist = torch.zeros_like(x)
             true_dist.fill_(self.smoothing / (self.n_classes - 1))
             true_dist.scatter_(1, target.data.unsqueeze(1), 1.0 - self.smoothing)
