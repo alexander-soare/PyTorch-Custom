@@ -53,7 +53,13 @@ def merge_config(custom_config):
     # for backwards compatibility
     try:
         config.schedulers = config.scheduler
+    except AttributeError:
+        pass
+    try:
         config.optimizers = config.optimizer
+    except AttributeError:
+        pass
+    try:
         config.criteria = config.criterion
     except AttributeError:
         pass
