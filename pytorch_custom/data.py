@@ -51,11 +51,12 @@ class DataLoaders:
     If do_balance=True, expects a sampling_weight column where this weight refers
      to how that type of row should be sampled
     """
-    def __init__(self, dataset_class, df, train_batch_size,
-                    train_dataset_kwargs={}, val_dataset_kwargs={}, 
-                    val_batch_size=None, num_folds=0, fold_ix=0, split_seed=None,
-                    do_stratify=True, train_transforms=[], val_transforms=[],
-                    do_balance=False, num_workers=0):
+    def __init__(self, dataset_class, df, train_batch_size, train_dataset_args=[],
+                    train_dataset_kwargs={}, val_dataset_args=[], 
+                    val_dataset_kwargs = {}, val_batch_size=None, num_folds=0,
+                    fold_ix=0, split_seed=None, do_stratify=True,
+                    train_transforms=[], val_transforms=[], do_balance=False,
+                    num_workers=0):
         
         if val_batch_size is None and num_folds > 0:
             val_batch_size = train_batch_size
@@ -71,6 +72,7 @@ class DataLoaders:
             train_ix = np.arange(len(df))
             
         self.train_dataset = dataset_class(df.iloc[train_ix],
+                                            *train_dataset_args,
                                             transforms=train_transforms,
                                             **train_dataset_kwargs)
         if do_balance:
@@ -88,6 +90,7 @@ class DataLoaders:
 
         if num_folds > 0:
             self.val_dataset = dataset_class(df.iloc[val_ix],
+                                            *val_dataset_args,
                                             transforms=val_transforms,
                                             **val_dataset_kwargs)
             if do_balance:
