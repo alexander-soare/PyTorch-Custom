@@ -88,7 +88,8 @@ class DataLoaders:
         self.train_loader = DataLoader(self.train_dataset,
                         batch_size=train_batch_size, shuffle=(not do_balance),
                         num_workers=num_workers, pin_memory=True,
-                        sampler=train_sampler)
+                        sampler=train_sampler,
+                        collate_fn=getattr(self.train_dataset, 'collate_fn', None))
 
 
         if num_folds > 0:
@@ -105,4 +106,5 @@ class DataLoaders:
             self.val_loader = DataLoader(self.val_dataset,
                                     batch_size=val_batch_size, shuffle=False,
                                     num_workers=num_workers, pin_memory=True,
-                                    sampler=val_sampler)
+                                    sampler=val_sampler, 
+                                    collate_fn=getattr(self.val_dataset, 'collate_fn', None))
