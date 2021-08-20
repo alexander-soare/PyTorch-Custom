@@ -61,13 +61,16 @@ class DataLoaders:
         if val_batch_size is None and num_folds > 0:
             val_batch_size = train_batch_size
 
-        kfold_class = StratifiedKFold if do_stratify else KFold
-
         if num_folds > 0:
+            kfold_class = StratifiedKFold if do_stratify else KFold
             kf = kfold_class(n_splits=num_folds, shuffle=True,
                                 random_state=split_seed)
-            train_ix, val_ix = next(islice(kf.split(df.file_path,
+            if do_stratify:
+                train_ix, val_ix = next(islice(kf.split(df.file_path,
                             df.stratify_group), fold_ix, fold_ix+1))
+            else:
+                train_ix, val_ix = next(islice(kf.split(
+                                        df.file_path), fold_ix, fold_ix+1))
         else:
             train_ix = np.arange(len(df))
             
