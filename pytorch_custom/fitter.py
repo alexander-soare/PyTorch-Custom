@@ -678,6 +678,8 @@ class Fitter:
             self.config.optimizer_params['lr'] = start_lrs[0]
         self.config.schedulers = [torch.optim.lr_scheduler.ExponentialLR]*len(start_lrs)
         self.config.scheduler_params = [{'gamma': gamma}]*len(start_lrs)
+        self.config.scheduler_interval_eval = '[]'
+        self.config.scheduler_interval = 'step'
         self.reset_fitter_state()
         self.fit(verbose=2, save=False, bail=bail)
         self.plot_lr_sweep()
