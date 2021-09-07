@@ -70,7 +70,7 @@ class Fitter:
     """
     May need to override:
      - prepare_inputs_and_targets
-     - compute_loss
+     - compute_losses
      - compute_scores
      - collate_targets_and_outputs (for validation)
      - forward_train (if you have more than one model)
@@ -97,7 +97,7 @@ class Fitter:
         [model.to(device) for model in self.models]
         self.data_loaders = data_loaders
         self.device = device
-        # keep original config in case we want to reset it after lr sweep
+        # Keep original config in case we want to reset it after lr sweep
         self.original_config = config
         if config is not None:
             self.config = merge_config(config)
@@ -113,17 +113,29 @@ class Fitter:
             self.n_val_iters = len(self.data_loaders.train_loader)
         if load:
             self.load(load)
-        # for validation debug
+        # For validation debug
         self.id_key = id_key
-        # automatic mixed precision
+        # Automatic mixed precision
         if self.config.use_amp:
             self.scaler = amp.GradScaler()
             self.train_forward_context = amp.autocast
         else:
             self.train_forward_context = TrivialContext
-        # check score objective
+        # Check score objective
         assert self.config.score_objective in ['min', 'max'], \
                         "config.score_objective must be either 'min' or 'max'"
+        # Handle multiple losses
+        if not isinstance(self.config.criteria, Sequence):
+            self.config.criteria = [self.config.criteria]
+        # Make sure that there is a weighting for the losses in case it wasn't
+        # provided in the config
+        if hasattr(self.config, 'criteria_weights'):
+            assert (len(self.config.criteria_weights) \
+                == len(self.config.criteria)), ("config.criteria_weights "
+                "must be same length as config.criteria")
+            self.loss_weights = self.config.criteria_weights
+        else:
+            self.loss_weights = [1.] * len(self.config.criteria)
 
     def reset_fitter_state(self):
         """
@@ -193,7 +205,7 @@ class Fitter:
 
     def forward_train(self, inputs, targets):
         """
-        a single forward pass for training. usually this is straight forward
+        A single forward pass for training. usually this is straight forward
         but one might want to be more specific where there are multiple models
         """
         return self.models[0](*inputs)
@@ -211,7 +223,8 @@ class Fitter:
             if not isinstance(losses, Sequence):
                 # backwards compatibility
                 losses = [losses]
-            loss = sum(losses)
+            loss = sum(
+                [l * w for l, w in zip(losses, self.loss_weights)])
 
         if self.config.use_amp:
             self.scaler.scale(loss).backward()
@@ -411,8 +424,13 @@ class Fitter:
 
     def prepare_inputs_and_targets(self, data, mode='val'):
         """
-        this method probably needs to be overriden
-        return a list of batches of inputs, and a single batch of targets
+        This method probably needs to be overriden
+        Return a list of batches of inputs (each index in the list will be
+        treated as a positional argument for the model's forward), and a
+        single batch of targets. Multiple targets may be returned in any
+        format you desire, but then you'll have to modify `compute_losses`,
+        `compute_scores`, and `collate_targets_and_outputs` to handle it.
+        Don't forget to move whatever is necessary to `self.device`!
         """
         assert mode in ['train', 'val'], "`mode` must be either 'train' or 'val'"
         return [data['inp'].to(self.device)], data['target'].to(self.device)
@@ -492,49 +510,60 @@ class Fitter:
 
     def collate_targets_and_outputs(self, ls_targets, ls_outputs):
         """
-        during validation targets and outputs are concatenated into a list
+        During validation, targets and outputs are concatenated into a list
         depending on the nature of these, we might want to overwrite the way
         that the are collated prior to computing loss and score
-        by default, we have the naive implementation where ls_targets and ls_outputs
-        are lists of tensors
+        By default, we have the naive implementation where `ls_targets` and
+        `ls_outputs` simply need to be concatendated
         note that we send targets and outputs to cpu
+        TODO: Make this handle inputs as well so that we can visualize images
         """
         targets = torch.cat([t.cpu() for t in ls_targets], axis=0)
         outputs = torch.cat([o.cpu() for o in ls_outputs], axis=0)
         return targets, outputs
 
     def compute_loss(self, targets, outputs, mode='train'):
-        # backwards compatibility
-        if not isinstance(self.config.criteria, Sequence):
-            self.config.criteria = [self.config.criteria]
+        """
+        Here for backwards compatibility. `compute_losses` is the one that's
+        used in other places, but that just calls this.
+        """
         return [c(outputs, targets) for c in self.config.criteria]
 
     def compute_losses(self, targets, outputs, mode='train'):
-        # backwards compatibility
+        """
+        Compute a loss (or multiple losses if the config specifies a sequence
+        of criteria)
+        NOTE: This points to compute_loss for backwards compatibility. This is
+        the "official" one called in other places in the code
+        NOTE: If you need to handle multiple targets AND multiple losses
+        you will have to override this.
+        """
         return self.compute_loss(targets, outputs, mode=mode)
 
     def compute_score(self, targets, outputs, mode='val') -> Union[Sequence[float], float]:
         """
-        backwards compatibility
+        Backwards compatibility via compute_scores.
+        This method MUST be overriden if you want to compute scores
         """
         return []
 
     def compute_scores(self, targets, outputs, mode='val') -> Union[Sequence[float], float]:
         """
-        return a list of scores
+        Return a list of scores based on the targets
         Note that the order of scores affects two things:
         1. For the purpose of saving on best score, the first of the scores is
             used.
-        2. For the purposes of plotting scores, teh first of the scores is used
+        2. For the purposes of plotting scores, the first of the scores is used\
+        NOTE: This points to compute_score for backwards compatibility. This
+        is the "official" one called in other places in the code
         """
-        # backwards compatibility if not overriden
         return self.compute_score(targets, outputs, mode='val')
 
     def test(self, loader=None, verbose=True) -> Generator[
                             Tuple[Tensor, Optional[List[str]]], None, None]:
         """
-        similar to `validate` method, but not expecting targets. simply
-         a generator of outputs and ids if self.id_key is specified
+        Similar to `validate` method, but not expecting targets. Returns
+        a generator of outputs and ids if self.id_key is specified
         Note that this uses `forward_validate` method
         """
         [model.eval() for model in self.models]
@@ -633,7 +662,7 @@ class Fitter:
 
     def lr_sweep(self, start_lrs: Sequence[float], gamma: float, bail=np.float('inf')):
         """
-        run an lr sweep starting from `start_lrs` (provide as many lrs as there
+        Run an lr sweep starting from `start_lrs` (provide as many lrs as there
          are optimizers) and with exponential growth rate `gamma` (> 1)
         `bail` is the loss at which training stops
         """
