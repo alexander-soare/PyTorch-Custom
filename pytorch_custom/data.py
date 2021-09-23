@@ -28,12 +28,16 @@ class ImageDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, ix):
         target = self.labels[ix]
-        img = self.load_image(self.file_paths[ix])
+        file_path = self.file_paths[ix]
+        img = self.load_image(file_path)
         if self.transforms is not None:
             img = self.transforms(image=img)['image']
         img = normalize(img)
-        return {'img': torch.tensor(img).permute(2,0,1).float(),
-                'target': torch.tensor(target)}
+        return {
+            'img': torch.tensor(img).permute(2,0,1).float(),
+            'target': torch.tensor(target),
+            'file_path': file_path,
+        }
 
     def load_image(self, file_path):
         img = cv2.imread(file_path)
