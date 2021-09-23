@@ -306,7 +306,11 @@ class Fitter:
                         scheduler.step(*args)
 
                 # logging
-                batch_size = inputs[0].shape[0]
+                if isinstance(inputs[0], Sequence):
+                    # Handle first input is a list instead of a Tensor
+                    batch_size = inputs[0][0].shape[0]
+                else:
+                    batch_size = inputs[0].shape[0]
                 with torch.no_grad():
                     # train_losses is just the item() version of losses for reporting
                     train_losses = [l.item() for l in losses]
