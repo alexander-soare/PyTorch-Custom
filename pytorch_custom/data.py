@@ -55,13 +55,16 @@ class DataLoaders:
     If stratified_split=True, then expects stratify_group column.
     If do_balance=True, expects a sampling_weight column where this weight refers
     to how that type of row should be sampled
+    collate_fn will normally be grabbed from the dataset, but this behaviour
+    may be overridden by providing one here.
     """
     def __init__(
             self, dataset_class, df, train_batch_size, train_dataset_args=[],
             train_dataset_kwargs={}, val_dataset_args=[],
             val_dataset_kwargs = {}, val_batch_size=None, num_folds=0,
             fold_ix=0, split_seed=None, do_stratify=True, train_transforms=[],
-            val_transforms=[], do_balance=False, num_workers=0):
+            val_transforms=[], do_balance_train=False, do_balance_val=False,
+            num_workers=0, train_collate_fn=None, val_collate_fn=None):
         
         if val_batch_size is None and num_folds > 0:
             val_batch_size = train_batch_size
@@ -91,7 +94,7 @@ class DataLoaders:
         self.train_dataset = dataset_class(
             df[df.file_path.isin(train_file_paths)], *train_dataset_args,
             transforms=train_transforms, **train_dataset_kwargs)
-        if do_balance:
+        if do_balance_train:
             train_sampler = WeightedRandomSampler(
                 torch.Tensor(list(df[
                     df.file_path.isin(train_file_paths)].sampling_weight)),
@@ -99,23 +102,27 @@ class DataLoaders:
         else:
             train_sampler = None
 
+        train_collate_fn = train_collate_fn or getattr(
+            self.train_dataset, 'collate_fn', None)
         self.train_loader = DataLoader(self.train_dataset,
-            batch_size=train_batch_size, shuffle=(not do_balance),
+            batch_size=train_batch_size, shuffle=(not do_balance_train),
             num_workers=num_workers, pin_memory=True, sampler=train_sampler,
-            collate_fn=getattr(self.train_dataset, 'collate_fn', None))
+            collate_fn=train_collate_fn)
 
         if num_folds > 0:
             self.val_dataset = dataset_class(
                 df[df.file_path.isin(val_file_paths)], *val_dataset_args,
                 transforms=val_transforms, **val_dataset_kwargs)
-            if do_balance:
+            if do_balance_val:
                 val_sampler = WeightedRandomSampler(
                     torch.Tensor(list(df[
                         df.file_path.isin(val_file_paths)].sampling_weight)),
                     len(self.val_dataset))
             else:
                 val_sampler = None
+            val_collate_fn = val_collate_fn or getattr(
+                self.val_dataset, 'collate_fn', None)
             self.val_loader = DataLoader(
                 self.val_dataset, batch_size=val_batch_size, shuffle=False,
                 num_workers=num_workers, pin_memory=True, sampler=val_sampler, 
-                collate_fn=getattr(self.val_dataset, 'collate_fn', None))
+                collate_fn=val_collate_fn)
