@@ -139,7 +139,7 @@ class Fitter:
 
     def reset_fitter_state(self):
         """
-        NOTE: I haven't done a thorough check to make sure I'm not missing anythin
+        Reset the history, optimizers, schedulers, running best loss and score, and starting epoch.
         """
         self.reset_history()
         self.reset_optimizers()
@@ -157,13 +157,20 @@ class Fitter:
             optimizers = [optimizers]
         assert len(optimizers) == len(self.models), \
                     "Must provide as many optimizers as models"
-        optimizer_params = self.config.optimizer_params
-        if not isinstance(optimizer_params, Sequence):
-            optimizer_params = [optimizer_params]
+        optimizer_kwargs = self.config.optimizer_params
+        if not isinstance(optimizer_kwargs, Sequence):
+            optimizer_kwargs = [optimizer_kwargs]
         self.optimizers = []
-        for opt, ops, m in zip(optimizers, optimizer_params, self.models):
-            self.optimizers.append(opt(m.parameters(), **ops))
-        
+        for opt, opkwargs, m in zip(optimizers, optimizer_kwargs, self.models):
+            param_groups = self.get_optimizer_param_groups(m, **opkwargs)
+            self.optimizers.append(opt(param_groups, **opkwargs))
+    
+    def get_optimizer_param_groups(self, m, **optimizer_kwargs):
+        """
+        Can override this to break the parameters into separate groups each with their own optimizer arguments.
+        """
+        return [{'params': m.parameters(), **optimizer_kwargs}]
+
     def set_lrs(self, lrs: Union[Sequence[float], float]):
         """ manually set the lrs of the optimizers
         """
@@ -299,18 +306,20 @@ class Fitter:
                 # first keep track of lr to report on it
                 lrs = []
                 for optimizer in self.optimizers:
+                    # TODO handle case in which there are more param groups.
                     lrs.append(optimizer.param_groups[0]['lr'])
                 for scheduler in self.schedulers:
                     if self.config.scheduler_interval == 'step':
                         args = eval(self.config.scheduler_interval_eval)
                         scheduler.step(*args)
 
-                # logging
+                # Logging.
                 if isinstance(inputs[0], Sequence):
                     # Handle first input is a list instead of a Tensor
                     batch_size = inputs[0][0].shape[0]
                 else:
                     batch_size = inputs[0].shape[0]
+
                 with torch.no_grad():
                     # train_losses is just the item() version of losses for reporting
                     train_losses = [l.item() for l in losses]
@@ -428,7 +437,7 @@ class Fitter:
 
     def prepare_inputs_and_targets(self, data, mode='val'):
         """
-        This method probably needs to be overriden
+        This method probably needs to be overridden.
         Return a list of batches of inputs (each index in the list will be
         treated as a positional argument for the model's forward), and a
         single batch of targets. Multiple targets may be returned in any
@@ -516,9 +525,9 @@ class Fitter:
         """
         During validation, targets and outputs are concatenated into a list
         depending on the nature of these, we might want to overwrite the way
-        that the are collated prior to computing loss and score
+        that they are collated prior to computing loss and score
         By default, we have the naive implementation where `ls_targets` and
-        `ls_outputs` simply need to be concatendated
+        `ls_outputs` simply need to be concatenated
         note that we send targets and outputs to cpu
         TODO: Make this handle inputs as well so that we can visualize images
         """
@@ -547,7 +556,7 @@ class Fitter:
     def compute_score(self, targets, outputs, mode='val') -> Union[Sequence[float], float]:
         """
         Backwards compatibility via compute_scores.
-        This method MUST be overriden if you want to compute scores
+        This method MUST be overridden if you want to compute scores
         """
         return []
 
@@ -557,7 +566,7 @@ class Fitter:
         Note that the order of scores affects two things:
         1. For the purpose of saving on best score, the first of the scores is
             used.
-        2. For the purposes of plotting scores, the first of the scores is used\
+        2. For the purposes of plotting scores, the first of the scores is used
         NOTE: This points to compute_score for backwards compatibility. This
         is the "official" one called in other places in the code
         """
