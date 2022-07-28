@@ -44,7 +44,7 @@ class WarmupReduceLROnPlateau(ReduceLROnPlateau):
     def __init__(self, optimizer, mode='min', factor=0.1, patience=10,
                  threshold=1e-4, threshold_mode='rel', cooldown=0,
                  min_lr=0, eps=1e-8, warmup_itrs=0, warmup_type='lin',
-                 start_lr=1e-16, verbose=False):
+                 start_lr=1e-16, start_patience=0, verbose=False):
         super().__init__(optimizer, mode=mode, factor=factor, patience=patience,
                  threshold=threshold, threshold_mode=threshold_mode,
                  cooldown=cooldown, min_lr=min_lr, eps=eps, verbose=verbose)
@@ -55,6 +55,7 @@ class WarmupReduceLROnPlateau(ReduceLROnPlateau):
         self.itr = 0
         for param_group in optimizer.param_groups:
             self.default_lrs.append(param_group['lr'])
+        self.start_patience = start_patience
 
     def step(self, metrics):
         if self.itr < self.warmup_itrs:
@@ -71,6 +72,8 @@ class WarmupReduceLROnPlateau(ReduceLROnPlateau):
         elif self.itr == self.warmup_itrs:
             for i, param_group in enumerate(self.optimizer.param_groups):
                 param_group['lr'] = self.default_lrs[i]
+        elif self.itr < self.start_patience:
+            pass
         else:
             super().step(metrics)
         self.itr += 1
