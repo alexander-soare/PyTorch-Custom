@@ -46,12 +46,14 @@ def denormalize(img: np.ndarray, mean=[0.485, 0.456, 0.406],
 
 def pad_batch(img_batch: List[Tensor], pad_kwargs: Dict = {},
               bboxes_batch: Optional[List[Tensor]] = None,
-              masks_batch: Optional[List[Tensor]] = None) -> Dict:
+              masks_batch: Optional[List[Tensor]] = None,
+              max_h: Optional[int] = None,
+              max_w: Optional[int] = None) -> Dict:
     """
     Useful for collate_fn when we want to keep image aspect ratios in a batch
-    This pads all imgs to a common size. The common height and common width
-    are determined to be the maximum of the heights/widths of the inputs
-    respectively.
+    This pads all imgs to a common size. Unless otherwise specified, the
+    common height and common width are determined to be the maximum of the
+    heights/widths of the inputs respectively.
 
     Args:
         img_batch - A list of tensors representing individual images
@@ -64,6 +66,12 @@ def pad_batch(img_batch: List[Tensor], pad_kwargs: Dict = {},
         masks_batch (optional) - A list of 3D tensors each having the same
             height and width as the corresponding image. Each tensor should
             have shape (N, H, W), where N matches the number of bboxes.
+        max_h (optional) - Specify the height to which images need to be
+            padded to. If not provided, the maximum height of all images is
+            used.
+        max_w (optional) - Specify the width to which images need to be
+            padded to. If not provided, the maximum width of all images is
+            used.
     Returns:
         (dict) - A dictionary with keys for the transformed versions of each
             of the inputs. Specifically:
@@ -81,7 +89,10 @@ def pad_batch(img_batch: List[Tensor], pad_kwargs: Dict = {},
     if masks_batch is None:
         masks_batch = [None] * len(img_batch)
     # Pad all images to same size keeping into account the bbox shifts
-    max_h, max_w = np.max([img.shape[-2:] for img in img_batch], axis=0)
+    if max_h is None:
+        max_h = max(img.shape[-2] for img in img_batch)
+    if max_w is None:
+        max_w = max(img.shape[-1] for img in img_batch)
     for i, (img, bboxes, masks) in enumerate(
             zip(img_batch, bboxes_batch, masks_batch)):
         pad_left, pad_right, pad_top, pad_bottom = 0, 0, 0, 0
