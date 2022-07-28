@@ -87,30 +87,34 @@ class CELabelSmoothingLoss(nn.Module):
     """
     Cross Entropy Loss with label smoothing, takes logits
     """
-    def __init__(self, smoothing, n_classes, dim=-1, ignore_index=-100):
+    def __init__(self, smoothing, num_classes, dim=-1, ignore_index=-1):
         """
-        `n_classes` is number of classes
-        `smoothing` is the smoothing factor. How much less confident than 100%
-         are we on true labels?
+        Args:
+            - `smoothing`: The smoothing factor. How much less confident than 100%
+                are we on true labels?
+            - `num_classes`: Number of classes.
+            - `ignore_index`: Allows us to not compute losses where the target is a certain categorical value. May be
+                useful if we want to ignore padding tokens in and NLP setting. Defaults to -1 meaning it is not used.
         """
         super(CELabelSmoothingLoss, self).__init__()
         self.smoothing = smoothing
-        self.n_classes = n_classes
+        self.num_classes = num_classes
         self.dim = dim
         self.ignore_index = ignore_index
         if ignore_index >= 0:
             warnings.warn("ignore_index has not been tested yet")
 
     def forward(self, input, target):
-        """ expects target to be categorical, and input to be logits
+        """ 
+        Expects target to be categorical, and input to be logits.
         """
         x = input.log_softmax(dim=self.dim)
         with torch.no_grad():
             if self.ignore_index >= 0:
+                input = input[target != self.ignore_index]
                 target = target[target != self.ignore_index]
-                input = input[input != self.ignore_index]
             true_dist = torch.zeros_like(x)
-            true_dist.fill_(self.smoothing / (self.n_classes - 1))
+            true_dist.fill_(self.smoothing / (self.num_classes - 1))
             true_dist.scatter_(1, target.data.unsqueeze(1), 1.0 - self.smoothing)
         return torch.mean(torch.sum(-true_dist * x, dim=self.dim))
 
@@ -155,6 +159,5 @@ class SmoothCTCLoss(_Loss):
         kl_tar = torch.full_like(kl_inp, 1. / self.num_classes)
         kldiv_loss = self.kldiv(kl_inp, kl_tar)
 
-        #print(ctc_loss, kldiv_loss)
         loss = (1. - self.weight) * ctc_loss + self.weight * kldiv_loss
         return loss
